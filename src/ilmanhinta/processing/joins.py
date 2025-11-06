@@ -80,11 +80,12 @@ class TemporalJoiner:
         weather_df = weather_df.sort("timestamp")
 
         # Use join_asof for temporal join (nearest match within tolerance)
+        tolerance_seconds = int(tolerance.total_seconds())
         joined = consumption_df.join_asof(
             weather_df,
             on="timestamp",
             strategy="nearest",
-            tolerance=str(tolerance.total_seconds()) + "s",
+            tolerance=str(tolerance_seconds) + "s",
         )
 
         # Drop rows with missing weather data (outside tolerance)
@@ -113,13 +114,12 @@ class TemporalJoiner:
             return df
 
         # Round timestamp to nearest hour
-        df = df.with_columns(
-            pl.col("timestamp").dt.round("1h").alias("timestamp_hourly")
-        )
+        df = df.with_columns(pl.col("timestamp").dt.round("1h").alias("timestamp_hourly"))
 
         # Group by hourly timestamp and aggregate
         numeric_cols = [
-            col for col in df.columns
+            col
+            for col in df.columns
             if col not in ["timestamp", "timestamp_hourly"] and df[col].dtype.is_numeric()
         ]
 

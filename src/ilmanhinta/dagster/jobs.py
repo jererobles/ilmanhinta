@@ -1,6 +1,6 @@
 """Dagster jobs for data ingestion, training, and prediction."""
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from dagster import (
@@ -68,6 +68,7 @@ def fmi_weather_data(context: AssetExecutionContext) -> Path:
 def processed_training_data(context: AssetExecutionContext) -> Path:
     """Join and process data for model training."""
     logger.info("Processing training data")
+    import polars as pl
 
     # Load latest raw data
     consumption_files = sorted((DATA_DIR / "raw").glob("fingrid_consumption_*.parquet"))
@@ -76,13 +77,13 @@ def processed_training_data(context: AssetExecutionContext) -> Path:
     if not consumption_files or not weather_files:
         raise ValueError("No raw data files found")
 
-    consumption_df = TemporalJoiner.fingrid_to_polars([])
-    for file in consumption_files[-7:]:  # Last 7 files
-        consumption_df = consumption_df.vstack(consumption_df.read_parquet(file))
+    # Read and combine latest consumption files
+    consumption_frames = [pl.read_parquet(file) for file in consumption_files[-7:]]
+    consumption_df = pl.concat(consumption_frames) if consumption_frames else pl.DataFrame()
 
-    weather_df = TemporalJoiner.fmi_to_polars([])
-    for file in weather_files[-7:]:
-        weather_df = weather_df.vstack(weather_df.read_parquet(file))
+    # Read and combine latest weather files
+    weather_frames = [pl.read_parquet(file) for file in weather_files[-7:]]
+    weather_df = pl.concat(weather_frames) if weather_frames else pl.DataFrame()
 
     # Temporal join
     joined_df = TemporalJoiner.temporal_join(consumption_df, weather_df)

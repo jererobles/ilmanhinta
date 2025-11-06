@@ -41,8 +41,7 @@ class FeatureEngineer:
             lags = [1, 3, 6, 12, 24, 48, 168]
 
         lag_exprs = [
-            pl.col(target_col).shift(lag).alias(f"{target_col}_lag_{lag}h")
-            for lag in lags
+            pl.col(target_col).shift(lag).alias(f"{target_col}_lag_{lag}h") for lag in lags
         ]
 
         df = df.with_columns(lag_exprs)
@@ -66,20 +65,22 @@ class FeatureEngineer:
 
         rolling_exprs = []
         for window in windows:
-            rolling_exprs.extend([
-                pl.col(target_col)
-                .rolling_mean(window_size=window, min_periods=1)
-                .alias(f"{target_col}_rolling_mean_{window}h"),
-                pl.col(target_col)
-                .rolling_std(window_size=window, min_periods=1)
-                .alias(f"{target_col}_rolling_std_{window}h"),
-                pl.col(target_col)
-                .rolling_min(window_size=window, min_periods=1)
-                .alias(f"{target_col}_rolling_min_{window}h"),
-                pl.col(target_col)
-                .rolling_max(window_size=window, min_periods=1)
-                .alias(f"{target_col}_rolling_max_{window}h"),
-            ])
+            rolling_exprs.extend(
+                [
+                    pl.col(target_col)
+                    .rolling_mean(window_size=window, min_periods=1)
+                    .alias(f"{target_col}_rolling_mean_{window}h"),
+                    pl.col(target_col)
+                    .rolling_std(window_size=window, min_periods=1)
+                    .alias(f"{target_col}_rolling_std_{window}h"),
+                    pl.col(target_col)
+                    .rolling_min(window_size=window, min_periods=1)
+                    .alias(f"{target_col}_rolling_min_{window}h"),
+                    pl.col(target_col)
+                    .rolling_max(window_size=window, min_periods=1)
+                    .alias(f"{target_col}_rolling_max_{window}h"),
+                ]
+            )
 
         df = df.with_columns(rolling_exprs)
 
@@ -94,20 +95,22 @@ class FeatureEngineer:
 
         # Temperature-based features
         if "temperature" in df.columns:
-            df = df.with_columns([
-                # Heating degree days (base 18°C)
-                pl.when(pl.col("temperature") < 18)
-                .then(18 - pl.col("temperature"))
-                .otherwise(0)
-                .alias("heating_degree_days"),
-                # Cooling degree days (base 22°C)
-                pl.when(pl.col("temperature") > 22)
-                .then(pl.col("temperature") - 22)
-                .otherwise(0)
-                .alias("cooling_degree_days"),
-                # Temperature squared (non-linear effects)
-                (pl.col("temperature") ** 2).alias("temperature_squared"),
-            ])
+            df = df.with_columns(
+                [
+                    # Heating degree days (base 18°C)
+                    pl.when(pl.col("temperature") < 18)
+                    .then(18 - pl.col("temperature"))
+                    .otherwise(0)
+                    .alias("heating_degree_days"),
+                    # Cooling degree days (base 22°C)
+                    pl.when(pl.col("temperature") > 22)
+                    .then(pl.col("temperature") - 22)
+                    .otherwise(0)
+                    .alias("cooling_degree_days"),
+                    # Temperature squared (non-linear effects)
+                    (pl.col("temperature") ** 2).alias("temperature_squared"),
+                ]
+            )
 
         # Wind chill effect
         if "temperature" in df.columns and "wind_speed" in df.columns:
@@ -125,8 +128,21 @@ class FeatureEngineer:
         return df
 
     @staticmethod
-    def create_all_features(df: pl.DataFrame, target_col: str = "consumption_mw") -> pl.DataFrame:
-        """Apply all feature engineering steps."""
+    def create_all_features(
+        df: pl.DataFrame,
+        target_col: str = "consumption_mw",
+        drop_nulls: bool = True,
+    ) -> pl.DataFrame:
+        """
+        Apply all feature engineering steps.
+
+        Parameters
+        - df: Input dataframe with at least `timestamp` and target column.
+        - target_col: Name of the target column used for lags/rolling.
+        - drop_nulls: When True (default), drop rows with any nulls. For
+          inference where the target is unknown for the forecast row, set to
+          False and handle row selection downstream.
+        """
         logger.info(f"Creating features from {len(df)} records")
 
         df = FeatureEngineer.add_time_features(df)
@@ -134,17 +150,20 @@ class FeatureEngineer:
         df = FeatureEngineer.add_rolling_features(df, target_col)
         df = FeatureEngineer.add_weather_interactions(df)
 
-        # Drop rows with NaN values (from lags/rolling windows)
-        initial_count = len(df)
-        df = df.drop_nulls()
-        final_count = len(df)
+        # Optionally drop rows with NaN values (from lags/rolling windows)
+        if drop_nulls:
+            initial_count = len(df)
+            df = df.drop_nulls()
+            final_count = len(df)
 
-        if initial_count > final_count:
-            logger.info(
-                f"Dropped {initial_count - final_count} rows with missing values "
-                f"(from lag/rolling features)"
-            )
+            if initial_count > final_count:
+                logger.info(
+                    f"Dropped {initial_count - final_count} rows with missing values "
+                    f"(from lag/rolling features)"
+                )
 
-        logger.info(f"Feature engineering complete: {len(df)} records with {len(df.columns)} features")
+        logger.info(
+            f"Feature engineering complete: {len(df)} records with {len(df.columns)} features"
+        )
 
         return df

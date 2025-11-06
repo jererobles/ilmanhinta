@@ -1,6 +1,5 @@
 """High-level prediction interface combining data fetching and model inference."""
 
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -47,6 +46,26 @@ class Predictor:
         consumption_df = TemporalJoiner.align_to_hourly(consumption_df)
         forecast_df = TemporalJoiner.align_to_hourly(forecast_df)
 
+        # Ensure both DataFrames share the same schema before vertical concatenation.
+        # consumption_df currently has columns: [timestamp, consumption_mw]
+        # forecast_df has weather columns: [temperature, humidity, wind_speed, wind_direction, pressure, precipitation, cloud_cover]
+        # Add missing weather columns to consumption_df as nulls so we can vstack later.
+        weather_cols = [
+            "temperature",
+            "humidity",
+            "wind_speed",
+            "wind_direction",
+            "pressure",
+            "precipitation",
+            "cloud_cover",
+        ]
+
+        for col in weather_cols:
+            if col not in consumption_df.columns:
+                consumption_df = consumption_df.with_columns(
+                    pl.lit(None, dtype=pl.Float64).alias(col)
+                )
+
         # 4. For each forecast hour, create features using historical data
         predictions: list[PredictionOutput] = []
 
@@ -54,10 +73,10 @@ class Predictor:
             forecast_row = forecast_df[i]
             forecast_time = forecast_row["timestamp"][0]
 
-            # Create a combined dataframe with history + current forecast point
-            current_df = pl.concat([
-                consumption_df,
-                pl.DataFrame({
+            # Create a combined dataframe with history + current forecast point.
+            # The appended single-row frame must match consumption_df schema.
+            current_row = pl.DataFrame(
+                {
                     "timestamp": [forecast_time],
                     "consumption_mw": [None],  # This is what we're predicting
                     "temperature": [forecast_row["temperature"][0]],
@@ -67,11 +86,14 @@ class Predictor:
                     "pressure": [forecast_row["pressure"][0]],
                     "precipitation": [forecast_row["precipitation"][0]],
                     "cloud_cover": [forecast_row["cloud_cover"][0]],
-                })
-            ]).sort("timestamp")
+                }
+            )
+
+            current_df = pl.concat([consumption_df, current_row]).sort("timestamp")
 
             # Create features (this will use historical consumption for lags)
-            features_df = FeatureEngineer.create_all_features(current_df)
+            # Keep nulls to preserve the forecast row even if target is None.
+            features_df = FeatureEngineer.create_all_features(current_df, drop_nulls=False)
 
             # Get the last row (our forecast point) - it should have lag features from history
             if not features_df.is_empty():
@@ -92,14 +114,25 @@ class Predictor:
                         )
                     )
 
-                # Update consumption_df with the prediction for next iteration
-                consumption_df = pl.concat([
-                    consumption_df,
-                    pl.DataFrame({
+                # Update consumption_df with the prediction for next iteration.
+                # Keep schema identical by adding weather columns as nulls for the appended row.
+                consumption_update_row = pl.DataFrame(
+                    {
                         "timestamp": [forecast_time],
                         "consumption_mw": [float(row["predicted_consumption_mw"][0])],
-                    })
-                ]).sort("timestamp")
+                        "temperature": [None],
+                        "humidity": [None],
+                        "wind_speed": [None],
+                        "wind_direction": [None],
+                        "pressure": [None],
+                        "precipitation": [None],
+                        "cloud_cover": [None],
+                    }
+                )
+
+                consumption_df = pl.concat([consumption_df, consumption_update_row]).sort(
+                    "timestamp"
+                )
 
         logger.info(f"Generated {len(predictions)} hourly predictions")
 

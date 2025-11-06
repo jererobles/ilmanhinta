@@ -2,21 +2,34 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class FingridDataPoint(BaseModel):
     """Single data point from Fingrid API."""
 
-    start_time: datetime = Field(..., description="Start timestamp in UTC")
-    end_time: datetime = Field(..., description="End timestamp in UTC")
+    # Fingrid returns camelCase keys (startTime/endTime). Accept both.
+    start_time: datetime = Field(
+        ...,
+        description="Start timestamp in UTC",
+        validation_alias=AliasChoices("start_time", "startTime"),
+    )
+    end_time: datetime = Field(
+        ...,
+        description="End timestamp in UTC",
+        validation_alias=AliasChoices("end_time", "endTime"),
+    )
     value: float = Field(..., description="Value (MW for consumption/production)")
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 
 class FingridResponse(BaseModel):
     """Response wrapper from Fingrid API."""
 
     data: list[FingridDataPoint] = Field(default_factory=list, description="Time series data")
+
+    model_config = ConfigDict(extra="ignore")
 
 
 # Dataset IDs for Fingrid API
