@@ -7,7 +7,8 @@ from typing import Any
 
 import lightgbm as lgb
 import polars as pl
-from loguru import logger
+
+from ilmanhinta.logging import logfire
 
 
 class ConsumptionModel:
@@ -30,7 +31,7 @@ class ConsumptionModel:
         params: dict[str, Any] | None = None,
     ) -> dict[str, float]:
         """Train LightGBM model on historical data."""
-        logger.info(f"Training model on {len(train_df)} records")
+        logfire.info(f"Training model on {len(train_df)} records")
 
         # Separate features and target
         feature_cols = [col for col in train_df.columns if col not in [target_col, "timestamp"]]
@@ -60,7 +61,7 @@ class ConsumptionModel:
         # Create LightGBM dataset
         train_data = lgb.Dataset(X, label=y, feature_name=feature_cols)
 
-        logger.info(f"Training with params: {default_params}")
+        logfire.info(f"Training with params: {default_params}")
 
         # Train model
         self.model = lgb.train(
@@ -89,7 +90,7 @@ class ConsumptionModel:
             "mse": mse,
         }
 
-        logger.info(f"Training complete: RMSE={rmse:.2f}, MAE={mae:.2f}")
+        logfire.info(f"Training complete: RMSE={rmse:.2f}, MAE={mae:.2f}")
 
         return metrics
 
@@ -98,7 +99,7 @@ class ConsumptionModel:
         if self.model is None:
             raise ValueError("Model not trained or loaded")
 
-        logger.info(f"Making predictions for {len(features_df)} records")
+        logfire.info(f"Making predictions for {len(features_df)} records")
 
         # Ensure feature order matches training
         X = features_df.select(self.feature_names).to_numpy()
@@ -118,7 +119,7 @@ class ConsumptionModel:
             ]
         )
 
-        logger.info("Predictions complete")
+        logfire.info("Predictions complete")
 
         return result
 
@@ -139,7 +140,7 @@ class ConsumptionModel:
         with open(path, "wb") as f:
             pickle.dump(metadata, f)
 
-        logger.info(f"Model saved to {path}")
+        logfire.info(f"Model saved to {path}")
 
     def load(self, path: Path) -> None:
         """Load model from disk."""
@@ -151,7 +152,7 @@ class ConsumptionModel:
         self.model_version = metadata["model_version"]
         self.trained_at = metadata["trained_at"]
 
-        logger.info(f"Model loaded from {path} (version: {self.model_version})")
+        logfire.info(f"Model loaded from {path} (version: {self.model_version})")
 
     def get_feature_importance(self) -> dict[str, float]:
         """Get feature importance scores."""

@@ -1,6 +1,6 @@
 # ⚡ Ilmanhinta - Finnish Weather → Energy Consumption Prediction
 
-Production-grade ETL pipeline predicting electricity consumption based on Finnish weather data. Built with modern Python tooling and deployed to Fly.io.
+Production-grade ETL pipeline predicting electricity consumption based on Finnish weather data. Built with modern Python tooling (DuckDB, Prophet, Logfire) and deployed to Fly.io.
 
 [![CI/CD](https://github.com/jererobles/ilmanhinta/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/ilmanhinta/actions)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -10,11 +10,14 @@ Production-grade ETL pipeline predicting electricity consumption based on Finnis
 ## 🎯 Features
 
 - **Real-time data ingestion** from Fingrid (electricity) and FMI (weather) APIs
+- **DuckDB OLAP engine** for time-series storage and SQL queries (replaces separate cache/DB)
 - **Temporal joins** with Polars for high-performance data processing
 - **Feature engineering** with sliding windows, lag features, and weather interactions
-- **LightGBM** model for consumption prediction
+- **Ensemble forecasting** combining Prophet (seasonality) + LightGBM (features)
+- **Finnish holiday detection** with Prophet (Juhannus electricity anomaly!)
+- **Logfire observability** with automatic FastAPI tracing (Pydantic-native)
 - **Dagster** orchestration with hourly ingestion and daily model retraining
-- **FastAPI** service with caching and Prometheus metrics
+- **FastAPI** service with Prometheus metrics and uncertainty intervals
 - **Fly.io** deployment with health checks and auto-scaling
 
 ## 🚀 Quick Start
@@ -96,44 +99,62 @@ curl http://localhost:8000/metrics
     ┌──────────────────────────────────────────┐
     │        Dagster Orchestration             │
     │  ┌────────────────────────────────────┐  │
-    │  │  Hourly: Ingest data               │  │
-    │  │  Daily: Train model                │  │
+    │  │  Hourly: Ingest to DuckDB+Parquet  │  │
+    │  │  Daily: Train ensemble models      │  │
     │  └────────────────────────────────────┘  │
     └──────────────────┬───────────────────────┘
                        │
                        ▼
            ┌───────────────────────┐
+           │   DuckDB Data Layer   │
+           │  - SQL temporal joins │
+           │  - OLAP queries       │
+           │  - Native Parquet I/O │
+           └───────────┬───────────┘
+                       │
+                       ▼
+           ┌───────────────────────┐
            │   Polars Processing   │
-           │  - Temporal joins     │
            │  - Hourly alignment   │
            │  - Feature engineering│
            └───────────┬───────────┘
                        │
-                       ▼
-              ┌────────────────┐
-              │  LightGBM Model │
-              │  - Gradient     │
-              │    boosting     │
-              │  - Time series  │
-              │    features     │
-              └────────┬───────┘
-                       │
-                       ▼
-            ┌──────────────────────┐
-            │    FastAPI Service    │
-            │  ┌────────────────┐   │
-            │  │ /predict/peak  │   │
-            │  │ /predict/      │   │
-            │  │   forecast     │   │
-            │  │ /metrics       │   │
-            │  └────────────────┘   │
-            └──────────────────────┘
-                       │
-                       ▼
-                ┌──────────┐
-                │  Fly.io  │
-                │ (Stockholm)│
-                └──────────┘
+            ┌──────────┴──────────┐
+            │                     │
+            ▼                     ▼
+   ┌──────────────┐     ┌──────────────────┐
+   │Prophet Model │     │ LightGBM Model   │
+   │ - Seasonality│     │ - Gradient       │
+   │ - Holidays   │     │   boosting       │
+   │ - Weather    │     │ - 30+ engineered │
+   │   regressors │     │   features       │
+   └──────┬───────┘     └────────┬─────────┘
+          │                      │
+          └──────────┬───────────┘
+                     ▼
+            ┌────────────────┐
+            │Ensemble Model  │
+            │ 40% Prophet    │
+            │ 60% LightGBM   │
+            └────────┬───────┘
+                     │
+                     ▼
+          ┌──────────────────────┐
+          │   FastAPI Service    │
+          │ (Logfire instrumented)│
+          │  ┌────────────────┐  │
+          │  │ /predict/peak  │  │
+          │  │ /predict/      │  │
+          │  │   forecast     │  │
+          │  │ /metrics       │  │
+          │  └────────────────┘  │
+          └──────────────────────┘
+                     │
+                     ▼
+              ┌──────────┐
+              │  Fly.io  │
+              │(Stockholm)│
+              └──────────┘
 ```
 
 ## 📊 Data Sources
@@ -169,6 +190,8 @@ curl http://localhost:8000/metrics
 - **uv**: Next-generation Python package manager (10-100x faster than pip)
 - **Polars**: High-performance DataFrame library (faster than pandas)
 - **Pydantic v2**: Data validation with 5-50x performance boost
+- **DuckDB**: In-process OLAP database for time-series queries
+- **Prophet**: Facebook's seasonal forecasting with holiday effects
 - **LightGBM**: Gradient boosting for time series prediction
 
 ### Orchestration & Serving
@@ -179,6 +202,7 @@ curl http://localhost:8000/metrics
 
 ### Monitoring & Deployment
 
+- **Logfire**: Pydantic-native observability with auto-instrumentation
 - **Prometheus**: Metrics collection (request latency, predictions)
 - **Fly.io**: Global application platform (Stockholm region)
 - **Docker**: Multi-stage builds for small images
@@ -192,24 +216,41 @@ curl http://localhost:8000/metrics
 
 ## 📈 ML Model
 
-### Features
+### Ensemble Architecture
+
+The forecasting system combines two complementary models:
+
+**Prophet Model (40% weight):**
+- Automatic seasonal decomposition (daily, weekly, yearly)
+- Finnish holiday effects (New Year, Midsummer, Independence Day, Christmas)
+- Weather regressors (temperature, humidity, wind, pressure)
+- Proper uncertainty intervals via MCMC sampling
+- Handles DST gaps gracefully
+
+**LightGBM Model (60% weight):**
+- Gradient boosting with 30+ engineered features
+- Complex non-linear feature interactions
+- Time-based, lag, rolling statistics features
+
+**Ensemble Strategy:**
+- Weighted average: `0.4 * Prophet + 0.6 * LightGBM`
+- Combined uncertainty via variance pooling
+- Prophet captures trend/seasonality, LightGBM captures weather-dependent deviations
+
+### LightGBM Features
 
 **Time-based:**
-
 - Hour of day, day of week, month
 - Weekend indicator
 - Heating/cooling degree days
 
 **Lag features:**
-
 - Consumption at t-1h, t-3h, t-6h, t-12h, t-24h, t-48h, t-168h
 
 **Rolling statistics:**
-
 - Mean, std, min, max over 6h, 12h, 24h, 168h windows
 
 **Weather features:**
-
 - Temperature, humidity, wind speed, pressure
 - Wind chill, temperature squared
 - Weather interactions
@@ -218,15 +259,91 @@ curl http://localhost:8000/metrics
 
 Typical performance on test set:
 
-- **RMSE**: ~200-300 MW
+- **Prophet RMSE**: ~250-350 MW
+- **LightGBM RMSE**: ~200-300 MW
+- **Ensemble RMSE**: ~180-280 MW (best)
 - **MAE**: ~150-250 MW
-- **Training time**: 2-5 minutes on historical data
+- **Training time**: 5-10 minutes for both models
 
 ### Retraining
 
 - **Schedule**: Daily at 2 AM (configurable)
 - **Training window**: Last 30 days
-- **Model versioning**: Timestamped model files
+- **Model versioning**: Timestamped model files (prophet_*, lightgbm_*)
+- **Ensemble**: Automatically created from latest Prophet + LightGBM models
+
+## 💾 DuckDB Data Layer
+
+DuckDB replaces multiple separate tools (Redis cache, Postgres storage, manual joins):
+
+### Architecture
+
+- **In-process OLAP database** stored as single file: `data/ilmanhinta.duckdb`
+- **Native Parquet reading** via `read_parquet()` for zero-copy ingestion
+- **Polars interop** through Arrow for efficient data transfer
+- **SQL-based temporal joins** replacing complex Python join logic
+
+### Tables
+
+**consumption:**
+- Fingrid electricity data (consumption, production, wind, nuclear)
+- 15-minute resolution aligned to hourly for ML
+- Indexed on timestamp for fast queries
+
+**weather:**
+- FMI observations and forecasts
+- Weather parameters (temperature, humidity, wind, pressure, etc.)
+- Supports both observation and forecast data types
+
+**predictions:**
+- Model forecasts with confidence intervals
+- Tracks model type (prophet, lightgbm, ensemble)
+- Version tracking for model comparisons
+
+### Benefits
+
+- **Single dependency** replaces Redis + Postgres + manual file scanning
+- **SQL queries** for complex time-series operations (ASOF joins, windows)
+- **Fast**: Columnar storage with Parquet compression
+- **Small**: Entire database fits in Docker image
+- **Embeddable**: No separate database server needed
+
+## 🔍 Logfire Observability
+
+Automatic distributed tracing without explicit logging calls:
+
+### Setup
+
+```bash
+# Get free Logfire token at https://logfire.pydantic.dev
+export LOGFIRE_TOKEN=your_token_here
+
+# Run with Logfire enabled
+python -m ilmanhinta.api.main
+```
+
+### Features
+
+- **Auto-instrumentation**: FastAPI requests traced automatically
+- **Structured logs**: No manual `logger.info()` needed
+- **Console fallback**: Works without token (logs to console)
+- **Low overhead**: Built by Pydantic team, optimized for performance
+
+### What Gets Traced
+
+- Every FastAPI request (method, path, duration, status)
+- Database queries (DuckDB operations)
+- Model predictions (features, outputs, confidence)
+- External API calls (Fingrid, FMI)
+
+### Viewing Traces
+
+1. Sign up at [logfire.pydantic.dev](https://logfire.pydantic.dev)
+2. Set `LOGFIRE_TOKEN` environment variable
+3. Run application
+4. View traces in Logfire dashboard
+
+No configuration files, no complex setup. It just works™.
 
 ## 🚀 Deployment
 
@@ -273,6 +390,12 @@ Optional:
 - `LOG_LEVEL`: Logging level (default: INFO)
 - `CACHE_TTL_SECONDS`: Cache duration (default: 180)
 - `MODEL_RETRAIN_HOURS`: Retrain interval (default: 24)
+
+Observability (Logfire):
+
+- `LOGFIRE_TOKEN`: Logfire API token (optional, falls back to console logging)
+- `LOGFIRE_PROJECT`: Project name (default: ilmanhinta)
+- `LOGFIRE_ENVIRONMENT`: Environment tag (default: production)
 
 ## 📊 API Documentation
 
@@ -372,13 +495,16 @@ docker run -p 8000:8000 --env-file .env ilmanhinta
 
 ## 🎯 Roadmap
 
+- [x] Ensemble models (Prophet + LightGBM)
+- [x] DuckDB for OLAP queries on time-series data
+- [x] Logfire observability with auto-instrumentation
 - [ ] Add Grafana dashboard for monitoring
 - [ ] Implement spot price prediction (Nord Pool integration)
 - [ ] Multi-region support (multiple FMI stations)
-- [ ] Ensemble models (Prophet + LightGBM)
 - [ ] Real-time prediction updates every 3 minutes
-- [ ] Historical data backfilling
+- [ ] Historical data backfilling via DuckDB
 - [ ] Model performance tracking over time
+- [ ] API endpoints for ensemble component breakdown (interpretability)
 
 ## 📝 License
 

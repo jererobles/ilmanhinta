@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", description="Logging level")
     cache_ttl_seconds: int = Field(default=180, description="Cache TTL for real-time data")
 
+    # Logfire (Pydantic observability)
+    logfire_token: str | None = Field(default=None, description="Logfire API token")
+    logfire_project: str = Field(default="ilmanhinta", description="Logfire project name")
+    logfire_environment: str = Field(default="production", description="Environment name")
+
     # ML Model
     model_retrain_hours: int = Field(default=24, description="Hours between model retraining")
     prediction_horizon_hours: int = Field(default=24, description="Prediction horizon")
