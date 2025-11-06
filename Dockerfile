@@ -1,6 +1,12 @@
 # Multi-stage build with uv for modern Python packaging
 FROM python:3.11-slim AS builder
 
+# Install system dependencies for Prophet (needs C++ compiler)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 

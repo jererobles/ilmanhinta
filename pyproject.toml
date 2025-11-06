@@ -17,11 +17,13 @@ dependencies = [
     "dagster>=1.6.0",
     "dagster-webserver>=1.6.0",
     "lightgbm>=4.2.0",
+    "duckdb>=0.10.0",
+    "prophet>=1.1.5",
+    "logfire>=0.42.0",
     "prometheus-client>=0.19.0",
     "python-dotenv>=1.0.0",
     "pyarrow>=15.0.0",
     "fmiopendata>=0.5.0",
-    "loguru>=0.7.2",
 ]
 
 [project.optional-dependencies]
@@ -75,7 +77,7 @@ disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["fmiopendata.*", "lightgbm.*", "dagster.*"]
+module = ["fmiopendata.*", "lightgbm.*", "dagster.*", "prophet.*", "duckdb.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

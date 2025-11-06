@@ -6,11 +6,11 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
-from loguru import logger
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
 from ilmanhinta.config import settings
+from ilmanhinta.logging import logfire
 from ilmanhinta.ml.predict import Predictor
 from ilmanhinta.models.fmi import PredictionOutput
 
@@ -28,6 +28,9 @@ app = FastAPI(
     description="API for predicting electricity consumption based on weather data",
     version="0.1.0",
 )
+
+# Instrument FastAPI with Logfire for automatic tracing
+logfire.instrument_fastapi(app)
 
 # Global predictor instance (loaded once at startup)
 predictor: Predictor | None = None
@@ -57,22 +60,22 @@ async def startup_event() -> None:
     """Load model on startup."""
     global predictor
 
-    logger.info("Starting Ilmanhinta API")
+    logfire.info("Starting Ilmanhinta API")
 
     model_path = Path("data/models/model_latest.pkl")
     if not model_path.exists():
-        logger.warning(f"Model not found at {model_path}, API will not serve predictions")
+        logfire.warn(f"Model not found at {model_path}, API will not serve predictions")
         return
 
     try:
         predictor = Predictor(model_path)
-        logger.info(f"Model loaded: version {predictor.model.model_version}")
+        logfire.info(f"Model loaded: version {predictor.model.model_version}")
 
         # Set model version metric
         model_version_info.labels(version=predictor.model.model_version).set(1)
 
     except Exception as e:
-        logger.error(f"Failed to load model: {e}")
+        logfire.error(f"Failed to load model: {e}")
 
 
 @app.middleware("http")
@@ -129,7 +132,7 @@ async def predict_peak_consumption() -> PeakPrediction:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     try:
-        logger.info("Generating 24h peak consumption forecast")
+        logfire.info("Generating 24h peak consumption forecast")
 
         # Get all predictions for next 24h
         predictions = await predictor.predict_next_24h()
@@ -147,7 +150,7 @@ async def predict_peak_consumption() -> PeakPrediction:
         predictions_total.inc(len(predictions))
         prediction_value_mw.set(peak.predicted_consumption_mw)
 
-        logger.info(f"Peak prediction: {peak.predicted_consumption_mw:.2f} MW at {peak.timestamp}")
+        logfire.info(f"Peak prediction: {peak.predicted_consumption_mw:.2f} MW at {peak.timestamp}")
 
         return PeakPrediction(
             peak_timestamp=peak.timestamp,
@@ -159,7 +162,7 @@ async def predict_peak_consumption() -> PeakPrediction:
         )
 
     except Exception as e:
-        logger.error(f"Prediction error: {e}")
+        logfire.error(f"Prediction error: {e}")
         raise HTTPException(status_code=500, detail=str(e)) from None
 
 
@@ -174,7 +177,7 @@ async def predict_24h_forecast() -> list[PredictionOutput]:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     try:
-        logger.info("Generating 24h hourly forecast")
+        logfire.info("Generating 24h hourly forecast")
 
         predictions = await predictor.predict_next_24h()
 
@@ -188,12 +191,12 @@ async def predict_24h_forecast() -> list[PredictionOutput]:
             peak = max(predictions, key=lambda p: p.predicted_consumption_mw)
             prediction_value_mw.set(peak.predicted_consumption_mw)
 
-        logger.info(f"Generated {len(predictions)} hourly predictions")
+        logfire.info(f"Generated {len(predictions)} hourly predictions")
 
         return predictions
 
     except Exception as e:
-        logger.error(f"Forecast error: {e}")
+        logfire.error(f"Forecast error: {e}")
         raise HTTPException(status_code=500, detail=str(e)) from None
 
 
