@@ -186,7 +186,6 @@ This project demonstrates:
 ## 🔮 Future Enhancements
 
 Potential additions (documented in README):
-- Grafana dashboard
 - Nord Pool spot price prediction
 - Multi-region support
 - Ensemble models (Prophet + LightGBM)
@@ -201,6 +200,7 @@ All requested features implemented:
 - ✅ Sliding window features
 - ✅ ML model (LightGBM)
 - ✅ Dagster deployment
+- ✅ Grafana dashboard for monitoring
 - ✅ API endpoint: "next 24h peak consumption forecast"
 - ✅ uv for everything
 - ✅ Ruff + mypy pre-commit hooks

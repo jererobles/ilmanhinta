@@ -18,8 +18,15 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Install runtime dependencies
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends libgomp1 \
+  && rm -rf /var/lib/apt/lists/*
+
 # Copy Python packages from builder
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+# Also copy console scripts (dagster, dagster-daemon, uvicorn, etc.)
+COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application code
 COPY src/ilmanhinta ./ilmanhinta

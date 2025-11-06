@@ -242,11 +242,15 @@ flyctl auth login
 # Create app (first time)
 flyctl apps create ilmanhinta
 
-# Create volume for persistent data
+# Create volume for persistent data (model + data)
 flyctl volumes create ilmanhinta_data --region arn --size 10
 
-# Set secrets
+# Set secrets (required in production)
 flyctl secrets set FINGRID_API_KEY=your_api_key_here
+
+# or import from your local .env (only KEY=VALUE lines)
+# be careful to include only what you intend to keep secret
+# flyctl secrets import < .env
 
 # Deploy
 flyctl deploy
@@ -261,6 +265,32 @@ flyctl logs
 flyctl open
 ```
 
+Notes:
+
+- The app mounts a persistent volume at `/app/data`; trained models are saved under `/app/data/models`.
+- A Fly `release_command` runs before each deploy to (1) initialize Dagster instance files and (2) bootstrap a model if one is missing.
+- Dagster schedules run in a separate daemon process; the API just serves requests and hot‑reloads the model when it changes.
+- If the model is missing at runtime, predictions become available once the bootstrap or next training completes.
+
+### Dagster on Fly.io
+
+This repo runs Dagster in production using the Daemon and in‑process Python module location:
+
+- Daemon process group: `dagster-daemon run`
+- Workspace: `${DAGSTER_HOME}/workspace.yaml` with `python_module: ilmanhinta.dagster`
+- Instance: `${DAGSTER_HOME}/dagster.yaml` with sqlite storage inside the mounted volume
+
+Operations:
+
+- Start/ensure both API and daemon machines:
+  - `flyctl scale count app=1 daemon=1`
+- View logs:
+  - API: `flyctl logs --process app`
+  - Daemon: `flyctl logs --process daemon`
+- Optional UI (not exposed by default):
+  - Add the `ui` process in `fly.toml` (already commented)
+  - Access via: `flyctl proxy 3000` then open http://localhost:3000
+
 ### Environment Variables
 
 Required:
@@ -273,6 +303,15 @@ Optional:
 - `LOG_LEVEL`: Logging level (default: INFO)
 - `CACHE_TTL_SECONDS`: Cache duration (default: 180)
 - `MODEL_RETRAIN_HOURS`: Retrain interval (default: 24)
+
+Passing env to Fly:
+
+- Use `[env]` in `fly.toml` for non‑secret config (e.g., `DAGSTER_HOME`, `API_PORT`).
+- Use Fly Secrets for sensitive values:
+  - `flyctl secrets set FINGRID_API_KEY=...`
+  - or bulk import: `flyctl secrets import < .env`
+
+The application reads env vars directly (Pydantic). `.env` is for local dev only.
 
 ## 📊 API Documentation
 
@@ -323,6 +362,30 @@ Prometheus metrics endpoint.
 - `ilmanhinta_predictions_total`: Total predictions made
 - `ilmanhinta_peak_prediction_mw`: Latest peak prediction
 
+## 📈 Monitoring
+
+Spin up Prometheus and Grafana locally to visualize the metrics exposed by the API.
+
+```bash
+# Start the FastAPI service (requires the API to expose /metrics)
+make run-api
+
+# In a new terminal start Prometheus + Grafana
+docker compose -f monitoring/docker-compose.yml up -d
+```
+
+- Prometheus is available at http://localhost:9090.
+- Grafana runs at http://localhost:3000 (default admin/admin credentials).
+- The `Ilmanhinta Monitoring` dashboard is provisioned automatically from `monitoring/grafana/provisioning/dashboards/ilmanhinta-dashboard.json`.
+
+By default Prometheus scrapes `host.docker.internal:8000` (see `monitoring/prometheus/prometheus.yml`). On Linux you may need to change this to `172.17.0.1:8000` or your host IP.
+
+Shut everything down with:
+
+```bash
+docker compose -f monitoring/docker-compose.yml down
+```
+
 ## 🧪 Development
 
 ### Running Tests
@@ -372,7 +435,7 @@ docker run -p 8000:8000 --env-file .env ilmanhinta
 
 ## 🎯 Roadmap
 
-- [ ] Add Grafana dashboard for monitoring
+- [x] Add Grafana dashboard for monitoring
 - [ ] Implement spot price prediction (Nord Pool integration)
 - [ ] Multi-region support (multiple FMI stations)
 - [ ] Ensemble models (Prophet + LightGBM)

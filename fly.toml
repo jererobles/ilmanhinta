@@ -4,11 +4,22 @@ primary_region = "arn"  # Stockholm (closest to Finland)
 [build]
   dockerfile = "Dockerfile"
 
+[deploy]
+  # Ensure a trained model exists on the volume before the app starts
+  release_command = "python -m ilmanhinta.scripts.init_dagster_home && python -m ilmanhinta.scripts.bootstrap_model"
+
+# Define separate process groups for API and Dagster daemon
+[processes]
+  app = "python -m uvicorn ilmanhinta.api.main:app --host 0.0.0.0 --port 8000"
+  daemon = "dagster-daemon run"
+  # Optional UI (use `fly proxy 3000` to access privately):
+  # ui = "dagster-webserver -h 0.0.0.0 -p 3000 -w ${DAGSTER_HOME}/workspace.yaml"
+
 [env]
   API_HOST = "0.0.0.0"
   API_PORT = "8000"
   LOG_LEVEL = "INFO"
-  DAGSTER_HOME = "/app/dagster_home"
+  DAGSTER_HOME = "/app/data/dagster_home"
 
 [http_service]
   internal_port = 8000
