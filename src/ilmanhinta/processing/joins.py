@@ -105,7 +105,7 @@ class TemporalJoiner:
     @staticmethod
     def align_to_hourly(df: pl.DataFrame) -> pl.DataFrame:
         """
-        Align data to hourly resolution by rounding timestamps.
+        Align data to hourly resolution by flooring timestamps.
 
         FMI typically provides hourly data, Fingrid provides 3-minute data.
         This aligns everything to hourly intervals.
@@ -113,8 +113,8 @@ class TemporalJoiner:
         if df.is_empty():
             return df
 
-        # Round timestamp to nearest hour
-        df = df.with_columns(pl.col("timestamp").dt.round("1h").alias("timestamp_hourly"))
+        # Floor timestamps to the start of the hour to avoid spilling into the next hour
+        df = df.with_columns(pl.col("timestamp").dt.truncate("1h").alias("timestamp_hourly"))
 
         # Group by hourly timestamp and aggregate
         numeric_cols = [
