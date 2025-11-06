@@ -4,6 +4,7 @@ from datetime import datetime
 
 import polars as pl
 import pytest
+
 from ilmanhinta.models.fingrid import FingridDataPoint
 from ilmanhinta.models.fmi import FMIObservation
 from ilmanhinta.processing.features import FeatureEngineer

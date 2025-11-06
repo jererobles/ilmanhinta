@@ -17,7 +17,7 @@ class ConsumptionModel:
         """Initialize model, optionally loading from disk."""
         self.model: lgb.Booster | None = None
         self.feature_names: list[str] = []
-        self.model_version: str = "untrainied"
+        self.model_version: str = "untrained"
         self.trained_at: datetime | None = None
 
         if model_path and model_path.exists():

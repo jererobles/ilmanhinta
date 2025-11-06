@@ -291,6 +291,7 @@ class FMIClient:
                     st_int = int(st)
                     if st_int in meta and isinstance(meta[st_int], dict):
                         return cast(dict, meta[st_int])
+                # Ignore exceptions here; failure to convert or lookup is expected as part of multi-strategy matching.
                 except Exception:
                     pass
 
@@ -384,8 +385,8 @@ class FMIClient:
                     if len(parts) >= 2:
                         lon_f = float(parts[0])
                         lat_f = float(parts[1])
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"Failed to parse WKT coordinates from string '{s}': {e}")
 
         # Otherwise, coerce individual fields
         if lat_f is None:
