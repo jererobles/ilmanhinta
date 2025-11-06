@@ -39,7 +39,7 @@ echo ""
 
 # Create data directories
 echo "📁 Creating data directories..."
-mkdir -p data/{raw,processed,models}
+mkdir -p data/{raw,processed,models} dagster_home
 echo "✅ Data directories created"
 echo ""
 

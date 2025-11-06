@@ -195,17 +195,21 @@ curl http://localhost:8000/metrics
 ### Features
 
 **Time-based:**
+
 - Hour of day, day of week, month
 - Weekend indicator
 - Heating/cooling degree days
 
 **Lag features:**
+
 - Consumption at t-1h, t-3h, t-6h, t-12h, t-24h, t-48h, t-168h
 
 **Rolling statistics:**
+
 - Mean, std, min, max over 6h, 12h, 24h, 168h windows
 
 **Weather features:**
+
 - Temperature, humidity, wind speed, pressure
 - Wind chill, temperature squared
 - Weather interactions
@@ -213,6 +217,7 @@ curl http://localhost:8000/metrics
 ### Model Performance
 
 Typical performance on test set:
+
 - **RMSE**: ~200-300 MW
 - **MAE**: ~150-250 MW
 - **Training time**: 2-5 minutes on historical data
@@ -259,10 +264,12 @@ flyctl open
 ### Environment Variables
 
 Required:
+
 - `FINGRID_API_KEY`: Your Fingrid API key
 
 Optional:
-- `FMI_STATION_ID`: FMI station (default: 101004 - Helsinki)
+
+- `FMI_PLACE`: FMI station (default: 101004 - Helsinki)
 - `LOG_LEVEL`: Logging level (default: INFO)
 - `CACHE_TTL_SECONDS`: Cache duration (default: 180)
 - `MODEL_RETRAIN_HOURS`: Retrain interval (default: 24)
@@ -274,6 +281,7 @@ Optional:
 Returns the hour with peak predicted consumption in the next 24 hours.
 
 **Response:**
+
 ```json
 {
   "peak_timestamp": "2024-01-15T18:00:00Z",
@@ -290,6 +298,7 @@ Returns the hour with peak predicted consumption in the next 24 hours.
 Returns hourly consumption predictions for the next 24 hours.
 
 **Response:**
+
 ```json
 [
   {
@@ -308,6 +317,7 @@ Returns hourly consumption predictions for the next 24 hours.
 Prometheus metrics endpoint.
 
 **Metrics:**
+
 - `ilmanhinta_api_requests_total`: Total API requests
 - `ilmanhinta_api_request_duration_seconds`: Request latency
 - `ilmanhinta_predictions_total`: Total predictions made
