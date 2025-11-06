@@ -33,10 +33,7 @@ class ConsumptionModel:
         logger.info(f"Training model on {len(train_df)} records")
 
         # Separate features and target
-        feature_cols = [
-            col for col in train_df.columns
-            if col not in [target_col, "timestamp"]
-        ]
+        feature_cols = [col for col in train_df.columns if col not in [target_col, "timestamp"]]
 
         X = train_df.select(feature_cols).to_numpy()
         y = train_df[target_col].to_numpy()
@@ -83,7 +80,7 @@ class ConsumptionModel:
         # Calculate metrics
         predictions = self.model.predict(X)
         mse = float(((predictions - y) ** 2).mean())
-        rmse = mse ** 0.5
+        rmse = mse**0.5
         mae = float(abs(predictions - y).mean())
 
         metrics = {
@@ -110,16 +107,16 @@ class ConsumptionModel:
         predictions = self.model.predict(X)
 
         # Add predictions to dataframe
-        result = features_df.with_columns(
-            pl.Series("predicted_consumption_mw", predictions)
-        )
+        result = features_df.with_columns(pl.Series("predicted_consumption_mw", predictions))
 
         # Add confidence intervals (simple approximation using std)
         std = predictions.std()
-        result = result.with_columns([
-            (pl.col("predicted_consumption_mw") - 1.96 * std).alias("confidence_lower"),
-            (pl.col("predicted_consumption_mw") + 1.96 * std).alias("confidence_upper"),
-        ])
+        result = result.with_columns(
+            [
+                (pl.col("predicted_consumption_mw") - 1.96 * std).alias("confidence_lower"),
+                (pl.col("predicted_consumption_mw") + 1.96 * std).alias("confidence_upper"),
+            ]
+        )
 
         logger.info("Predictions complete")
 
@@ -162,4 +159,4 @@ class ConsumptionModel:
             raise ValueError("Model not trained or loaded")
 
         importance = self.model.feature_importance(importance_type="gain")
-        return dict(zip(self.feature_names, importance.tolist()))
+        return dict(zip(self.feature_names, importance.tolist(), strict=False))

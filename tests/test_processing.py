@@ -1,10 +1,9 @@
 """Tests for data processing with Polars."""
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import polars as pl
 import pytest
-
 from ilmanhinta.models.fingrid import FingridDataPoint
 from ilmanhinta.models.fmi import FMIObservation
 from ilmanhinta.processing.features import FeatureEngineer
@@ -57,10 +56,12 @@ def test_fmi_to_polars() -> None:
 
 def test_add_time_features() -> None:
     """Test time-based feature engineering."""
-    df = pl.DataFrame({
-        "timestamp": [datetime(2024, 1, 1, 12, 0), datetime(2024, 1, 6, 18, 0)],
-        "consumption_mw": [8500.0, 8600.0],
-    })
+    df = pl.DataFrame(
+        {
+            "timestamp": [datetime(2024, 1, 1, 12, 0), datetime(2024, 1, 6, 18, 0)],
+            "consumption_mw": [8500.0, 8600.0],
+        }
+    )
 
     result = FeatureEngineer.add_time_features(df)
 
@@ -70,8 +71,8 @@ def test_add_time_features() -> None:
 
     # Check values
     assert result["hour_of_day"][0] == 12
-    assert result["is_weekend"][0] == False  # Monday
-    assert result["is_weekend"][1] == True  # Saturday
+    assert not result["is_weekend"][0]  # Monday
+    assert result["is_weekend"][1]  # Saturday
 
 
 def test_align_to_hourly() -> None:
@@ -84,10 +85,12 @@ def test_align_to_hourly() -> None:
         datetime(2024, 1, 1, 12, 45),
     ]
 
-    df = pl.DataFrame({
-        "timestamp": timestamps,
-        "consumption_mw": [8500.0, 8520.0, 8510.0, 8530.0],
-    })
+    df = pl.DataFrame(
+        {
+            "timestamp": timestamps,
+            "consumption_mw": [8500.0, 8520.0, 8510.0, 8530.0],
+        }
+    )
 
     result = TemporalJoiner.align_to_hourly(df)
 

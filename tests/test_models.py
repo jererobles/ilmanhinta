@@ -2,8 +2,6 @@
 
 from datetime import datetime
 
-import pytest
-
 from ilmanhinta.models.fingrid import FingridDataPoint, FingridResponse
 from ilmanhinta.models.fmi import FMIObservation, WeatherData
 

@@ -105,7 +105,7 @@ class FMIClient:
                                 chosen_station = next(iter(per_station.keys()))
                             else:
                                 # Best-effort: try case-insensitive match, otherwise first key
-                                lowered = {k.lower(): k for k in per_station.keys()}
+                                lowered = {k.lower(): k for k in per_station}
                                 chosen_station = lowered.get(
                                     candidate_station_name.lower(), next(iter(per_station.keys()))
                                 )
@@ -192,7 +192,7 @@ class FMIClient:
                     except Exception:
                         return False
 
-                if any(_looks_like_ts(k) for k in data.keys()):
+                if any(_looks_like_ts(k) for k in data):
                     # Shape B: keyed by timestamp -> location name
                     for ts_key, per_location in data.items():
                         if not isinstance(per_location, dict):
@@ -223,7 +223,7 @@ class FMIClient:
                     # Shape A: descend into the first nested dict that looks like {timestamp -> parameters}
                     nested = None
                     for v in data.values():
-                        if isinstance(v, dict) and any(_looks_like_ts(k) for k in v.keys()):
+                        if isinstance(v, dict) and any(_looks_like_ts(k) for k in v):
                             nested = v
                             break
 
@@ -407,8 +407,5 @@ class FMIClient:
     @staticmethod
     def _fmt_fmi_time(dt: datetime) -> str:
         """Format datetime for FMI WFS: YYYY-MM-DDTHH:MM:SSZ (UTC, no micros)."""
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        else:
-            dt = dt.astimezone(UTC)
+        dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")

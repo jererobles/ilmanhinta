@@ -147,9 +147,7 @@ async def predict_peak_consumption() -> PeakPrediction:
         predictions_total.inc(len(predictions))
         prediction_value_mw.set(peak.predicted_consumption_mw)
 
-        logger.info(
-            f"Peak prediction: {peak.predicted_consumption_mw:.2f} MW at {peak.timestamp}"
-        )
+        logger.info(f"Peak prediction: {peak.predicted_consumption_mw:.2f} MW at {peak.timestamp}")
 
         return PeakPrediction(
             peak_timestamp=peak.timestamp,
@@ -162,7 +160,7 @@ async def predict_peak_consumption() -> PeakPrediction:
 
     except Exception as e:
         logger.error(f"Prediction error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from None
 
 
 @app.get("/predict/forecast", response_model=list[PredictionOutput])
@@ -196,7 +194,7 @@ async def predict_24h_forecast() -> list[PredictionOutput]:
 
     except Exception as e:
         logger.error(f"Forecast error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from None
 
 
 @app.get("/metrics")
