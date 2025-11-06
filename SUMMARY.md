@@ -50,11 +50,11 @@ Successfully implemented a **production-grade ETL pipeline** for predicting Finn
 
 ### 6. Deployment Infrastructure
 - **Dockerfile**: Multi-stage build with uv for fast builds
-- **Fly.io Configuration** (`fly.toml`):
-  - Stockholm region (closest to Finland)
+- **Railway Configuration** (`railway.json`):
+  - EU region (closest to Finland)
   - Health checks
-  - Auto-scaling
-  - Persistent volume for data
+  - Always-on (no sleep)
+  - Persistent volume for data at `/app/data`
 - GitHub Actions CI/CD pipeline
 
 ### 7. Code Quality
@@ -85,7 +85,7 @@ Data Sources (Fingrid + FMI)
         ↓
    FastAPI Service (with Prometheus)
         ↓
-     Fly.io (Stockholm)
+     Railway (EU region)
 ```
 
 ## 📈 Key Features
@@ -132,7 +132,7 @@ ilmanhinta/
 ├── data/                    # Data storage (created at runtime)
 ├── pyproject.toml          # Dependencies & config
 ├── Dockerfile              # Container image
-├── fly.toml                # Fly.io deployment
+├── railway.json            # Railway deployment
 ├── Makefile                # Development commands
 └── README.md               # Documentation
 ```

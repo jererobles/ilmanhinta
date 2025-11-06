@@ -1,6 +1,6 @@
 # ⚡ Ilmanhinta - Finnish Weather → Energy Consumption Prediction
 
-Production-grade ETL pipeline predicting electricity consumption based on Finnish weather data. Built with modern Python tooling (DuckDB, Prophet, Logfire) and deployed to Fly.io.
+Production-grade ETL pipeline predicting electricity consumption based on Finnish weather data. Built with modern Python tooling (DuckDB, Prophet, Logfire) and deployed to Railway.
 
 [![CI/CD](https://github.com/jererobles/ilmanhinta/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/ilmanhinta/actions)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -18,7 +18,7 @@ Production-grade ETL pipeline predicting electricity consumption based on Finnis
 - **Logfire observability** with automatic FastAPI tracing (Pydantic-native)
 - **Dagster** orchestration with hourly ingestion and daily model retraining
 - **FastAPI** service with Prometheus metrics and uncertainty intervals
-- **Fly.io** deployment with health checks and auto-scaling
+- **Railway** deployment with health checks and persistent volume
 
 ## 🚀 Quick Start
 
@@ -35,15 +35,17 @@ Production-grade ETL pipeline predicting electricity consumption based on Finnis
 git clone https://github.com/yourusername/ilmanhinta.git
 cd ilmanhinta
 
-# Install with uv (much faster than pip)
-uv pip install -e ".[dev]"
+# One-liner quickstart (creates .env, folders, installs deps)
+scripts/quickstart.sh
 
-# Set up pre-commit hooks
-pre-commit install
+# One-liner including Railway setup (login/link/init, secrets)
+scripts/quickstart.sh --cloud
 
-# Configure environment
-cp .env.example .env
-# Edit .env and add your FINGRID_API_KEY
+# Or do it step-by-step with Makefile
+make setup
+
+# Then edit .env and add your FINGRID_API_KEY (required)
+# Optionally set LOGFIRE_TOKEN to enable cloud tracing
 ```
 
 ### Usage
@@ -63,7 +65,7 @@ dagster dev -m ilmanhinta.dagster
 
 ```bash
 # Run with uvicorn
-python -m uvicorn ilmanhinta.api.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn ilmanhinta.api.main:app --host 0.0.0.0 --port 8000 --reload
 
 # Or use the module directly
 python -m ilmanhinta.api.main
@@ -152,8 +154,8 @@ curl http://localhost:8000/metrics
                      │
                      ▼
               ┌──────────┐
-              │  Fly.io  │
-              │(Stockholm)│
+              │ Railway  │
+              │  (EU)    │
               └──────────┘
 ```
 
@@ -204,7 +206,7 @@ curl http://localhost:8000/metrics
 
 - **Logfire**: Pydantic-native observability with auto-instrumentation
 - **Prometheus**: Metrics collection (request latency, predictions)
-- **Fly.io**: Global application platform (Stockholm region)
+- **Railway**: Cloud application platform with persistent volumes
 - **Docker**: Multi-stage builds for small images
 
 ### Code Quality
@@ -221,6 +223,7 @@ curl http://localhost:8000/metrics
 The forecasting system combines two complementary models:
 
 **Prophet Model (40% weight):**
+
 - Automatic seasonal decomposition (daily, weekly, yearly)
 - Finnish holiday effects (New Year, Midsummer, Independence Day, Christmas)
 - Weather regressors (temperature, humidity, wind, pressure)
@@ -228,11 +231,13 @@ The forecasting system combines two complementary models:
 - Handles DST gaps gracefully
 
 **LightGBM Model (60% weight):**
+
 - Gradient boosting with 30+ engineered features
 - Complex non-linear feature interactions
 - Time-based, lag, rolling statistics features
 
 **Ensemble Strategy:**
+
 - Weighted average: `0.4 * Prophet + 0.6 * LightGBM`
 - Combined uncertainty via variance pooling
 - Prophet captures trend/seasonality, LightGBM captures weather-dependent deviations
@@ -240,17 +245,21 @@ The forecasting system combines two complementary models:
 ### LightGBM Features
 
 **Time-based:**
+
 - Hour of day, day of week, month
 - Weekend indicator
 - Heating/cooling degree days
 
 **Lag features:**
+
 - Consumption at t-1h, t-3h, t-6h, t-12h, t-24h, t-48h, t-168h
 
 **Rolling statistics:**
+
 - Mean, std, min, max over 6h, 12h, 24h, 168h windows
 
 **Weather features:**
+
 - Temperature, humidity, wind speed, pressure
 - Wind chill, temperature squared
 - Weather interactions
@@ -269,7 +278,7 @@ Typical performance on test set:
 
 - **Schedule**: Daily at 2 AM (configurable)
 - **Training window**: Last 30 days
-- **Model versioning**: Timestamped model files (prophet_*, lightgbm_*)
+- **Model versioning**: Timestamped model files (prophet*\*, lightgbm*\*)
 - **Ensemble**: Automatically created from latest Prophet + LightGBM models
 
 ## 💾 DuckDB Data Layer
@@ -286,16 +295,19 @@ DuckDB replaces multiple separate tools (Redis cache, Postgres storage, manual j
 ### Tables
 
 **consumption:**
+
 - Fingrid electricity data (consumption, production, wind, nuclear)
 - 15-minute resolution aligned to hourly for ML
 - Indexed on timestamp for fast queries
 
 **weather:**
+
 - FMI observations and forecasts
 - Weather parameters (temperature, humidity, wind, pressure, etc.)
 - Supports both observation and forecast data types
 
 **predictions:**
+
 - Model forecasts with confidence intervals
 - Tracks model type (prophet, lightgbm, ensemble)
 - Version tracking for model comparisons
@@ -314,18 +326,17 @@ Automatic distributed tracing without explicit logging calls:
 
 ### Setup
 
-```bash
-# Get free Logfire token at https://logfire.pydantic.dev
-export LOGFIRE_TOKEN=your_token_here
+1. Sign up at [logfire.pydantic.dev](https://logfire.pydantic.dev)
+2. Set `LOGFIRE_TOKEN` environment variable
+3. Run application
+4. View traces in Logfire dashboard
 
-# Run with Logfire enabled
-python -m ilmanhinta.api.main
-```
+No configuration files, no complex setup. It just works™.
 
 ### Features
 
 - **Auto-instrumentation**: FastAPI requests traced automatically
-- **Structured logs**: No manual `logger.info()` needed
+- **Structured logs**: No manual `logfire.info()` needed
 - **Console fallback**: Works without token (logs to console)
 - **Low overhead**: Built by Pydantic team, optimized for performance
 
@@ -336,49 +347,65 @@ python -m ilmanhinta.api.main
 - Model predictions (features, outputs, confidence)
 - External API calls (Fingrid, FMI)
 
-### Viewing Traces
-
-1. Sign up at [logfire.pydantic.dev](https://logfire.pydantic.dev)
-2. Set `LOGFIRE_TOKEN` environment variable
-3. Run application
-4. View traces in Logfire dashboard
-
-No configuration files, no complex setup. It just works™.
-
 ## 🚀 Deployment
 
-### Deploy to Fly.io
+### Deploy to Railway
 
 ```bash
-# Install flyctl
-curl -L https://fly.io/install.sh | sh
+# Install Railway CLI
+# macOS (Homebrew)
+brew install railway
 
-# Login
-flyctl auth login
+# or generic install script
+curl -fsSL https://railway.app/install.sh | sh
 
-# Create app (first time)
-flyctl apps create ilmanhinta
+# Login (optional if you used '--cloud' or 'make setup-cloud')
+# Tip: you can also use the Makefile which checks/installs the CLI
+# make railway-login
+railway login
 
-# Create volume for persistent data
-flyctl volumes create ilmanhinta_data --region arn --size 10
+# Link a project the first time (choose ONE) — optional if you used '--cloud':
+# - Create a new project from this repo (recommended)
+# or: make railway-init
+railway init
+# - OR link to an existing project
+# or: make railway-link
+railway link
 
-# Set secrets
-flyctl secrets set FINGRID_API_KEY=your_api_key_here
+# Set required variables in Railway (never commit secrets)
+railway variables set FINGRID_API_KEY=$FINGRID_API_KEY
 
-# Deploy
-flyctl deploy
+# Deploy (reads railway.json)
+make deploy  # or: railway up
 
-# Check status
-flyctl status
+# If Railway CLI is not installed:
+# - The Makefile shows install instructions, or auto-installs when set:
+# AUTO_INSTALL_RAILWAY=1 make railway-login
 
 # View logs
-flyctl logs
+railway logs
 
 # Open in browser
-flyctl open
+railway open
 ```
 
+Notes:
+
+- `railway.json` defines a persistent volume mounted at `/app/data` for DuckDB, models, and parquet files. Railway provisions it on first deploy.
+- Railway injects `PORT`; the container listens on `${PORT}` or defaults to `8000` for local runs.
+
 ### Environment Variables
+
+Validate your local `.env`:
+
+```bash
+make check-env
+```
+
+Notes:
+
+- `.env` is ignored by Git; never commit secrets.
+- For production (Railway), set secrets via `railway variables set`.
 
 Required:
 
@@ -386,16 +413,16 @@ Required:
 
 Optional:
 
-- `FMI_PLACE`: FMI station (default: 101004 - Helsinki)
+- `FMI_STATION_ID`: FMI station ID (default: 101004 - Helsinki)
 - `LOG_LEVEL`: Logging level (default: INFO)
 - `CACHE_TTL_SECONDS`: Cache duration (default: 180)
 - `MODEL_RETRAIN_HOURS`: Retrain interval (default: 24)
 
 Observability (Logfire):
 
-- `LOGFIRE_TOKEN`: Logfire API token (optional, falls back to console logging)
-- `LOGFIRE_PROJECT`: Project name (default: ilmanhinta)
-- `LOGFIRE_ENVIRONMENT`: Environment tag (default: production)
+- `LOGFIRE_TOKEN`: Optional; when set, enables Logfire cloud tracing
+- `LOGFIRE_PROJECT`: Optional; default `ilmanhinta`
+- `LOGFIRE_ENVIRONMENT`: Optional; default `production`
 
 ## 📊 API Documentation
 

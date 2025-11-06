@@ -1,0 +1,22 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "RAILPACK",
+    "buildCommand": "pip install -e ."
+  },
+  "deploy": {
+    "numReplicas": 1,
+    "restartPolicyType": "ALWAYS",
+    "sleepApplication": false,
+    "startCommand": "uvicorn ilmanhinta.api.main:app --host 0.0.0.0 --port 8000 --reload",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 10
+  },
+  "variables": {
+    "SERVICE_TYPE": "api",
+    "API_HOST": "0.0.0.0",
+    "API_PORT": "${PORT}",
+    "LOG_LEVEL": "INFO",
+    "DB_PATH": "/app/data/ilmanhinta.duckdb"
+  }
+}

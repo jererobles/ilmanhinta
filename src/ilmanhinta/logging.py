@@ -1,7 +1,7 @@
 """Logfire instrumentation - structured observability that auto-traces everything.
 
 This replaces loguru's manual logging with Pydantic's Logfire.
-The magic: it auto-instruments without explicit logger.info() calls.
+The magic: it auto-instruments without explicit logfire.info() calls.
 The reality: you still need to configure it properly.
 """
 
@@ -14,7 +14,6 @@ from .config import settings
 # Initialize Logfire
 logfire.configure(
     token=settings.logfire_token,
-    project_name=settings.logfire_project,
     environment=settings.logfire_environment,
     # Send to console if no token provided (local development)
     send_to_logfire=settings.logfire_token is not None,

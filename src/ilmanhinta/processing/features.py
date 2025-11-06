@@ -1,7 +1,6 @@
 """Feature engineering with sliding windows and time-based features."""
 
 import polars as pl
-from loguru import logger
 
 
 class FeatureEngineer:
@@ -23,7 +22,7 @@ class FeatureEngineer:
             ]
         )
 
-        logger.debug("Added time-based features")
+        logfire.debug("Added time-based features")
         return df
 
     @staticmethod
@@ -46,7 +45,7 @@ class FeatureEngineer:
 
         df = df.with_columns(lag_exprs)
 
-        logger.debug(f"Added lag features for {target_col}: {lags}")
+        logfire.debug(f"Added lag features for {target_col}: {lags}")
         return df
 
     @staticmethod
@@ -84,7 +83,7 @@ class FeatureEngineer:
 
         df = df.with_columns(rolling_exprs)
 
-        logger.debug(f"Added rolling window features for {target_col}: {windows}")
+        logfire.debug(f"Added rolling window features for {target_col}: {windows}")
         return df
 
     @staticmethod
@@ -124,7 +123,7 @@ class FeatureEngineer:
                 ).alias("wind_chill")
             )
 
-        logger.debug("Added weather interaction features")
+        logfire.debug("Added weather interaction features")
         return df
 
     @staticmethod
@@ -143,7 +142,7 @@ class FeatureEngineer:
           inference where the target is unknown for the forecast row, set to
           False and handle row selection downstream.
         """
-        logger.info(f"Creating features from {len(df)} records")
+        logfire.info(f"Creating features from {len(df)} records")
 
         df = FeatureEngineer.add_time_features(df)
         df = FeatureEngineer.add_lag_features(df, target_col)
@@ -157,12 +156,12 @@ class FeatureEngineer:
             final_count = len(df)
 
             if initial_count > final_count:
-                logger.info(
+                logfire.info(
                     f"Dropped {initial_count - final_count} rows with missing values "
                     f"(from lag/rolling features)"
                 )
 
-        logger.info(
+        logfire.info(
             f"Feature engineering complete: {len(df)} records with {len(df.columns)} features"
         )
 

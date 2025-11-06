@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
-from loguru import logger
+import logfire
 
 from ilmanhinta.config import settings
 from ilmanhinta.models.fingrid import FingridDataPoint, FingridResponse
@@ -38,7 +38,7 @@ class FingridClient:
         if cache_key in self._cache:
             cached_at, cached_data = self._cache[cache_key]
             if datetime.utcnow() - cached_at < timedelta(seconds=settings.cache_ttl_seconds):
-                logger.debug(f"Cache hit for dataset {dataset_id}")
+                logfire.debug(f"Cache hit for dataset {dataset_id}")
                 return cached_data
 
         # Format timestamps for API (ISO 8601)
@@ -50,7 +50,7 @@ class FingridClient:
         }
 
         url = f"{self.BASE_URL}/{dataset_id}/data"
-        logger.info(f"Fetching Fingrid dataset {dataset_id} from {start_time} to {end_time}")
+        logfire.info(f"Fetching Fingrid dataset {dataset_id} from {start_time} to {end_time}")
 
         try:
             response = await self.client.get(url, params=params)
@@ -62,14 +62,16 @@ class FingridClient:
             # Cache the result
             self._cache[cache_key] = (datetime.utcnow(), parsed.data)
 
-            logger.info(f"Fetched {len(parsed.data)} data points from Fingrid dataset {dataset_id}")
+            logfire.info(
+                f"Fetched {len(parsed.data)} data points from Fingrid dataset {dataset_id}"
+            )
             return parsed.data
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error fetching Fingrid data: {e}")
+            logfire.error(f"HTTP error fetching Fingrid data: {e}")
             raise
         except Exception as e:
-            logger.error(f"Error fetching Fingrid data: {e}")
+            logfire.error(f"Error fetching Fingrid data: {e}")
             raise
 
     async def fetch_realtime_consumption(self, hours: int = 24) -> list[FingridDataPoint]:
