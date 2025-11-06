@@ -1,0 +1,71 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main, claude/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+        with:
+          version: "latest"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system -e ".[dev]"
+
+      - name: Run ruff (lint)
+        run: |
+          ruff check .
+
+      - name: Run ruff (format)
+        run: |
+          ruff format --check .
+
+      - name: Run mypy
+        run: |
+          mypy src/ilmanhinta --ignore-missing-imports
+        continue-on-error: true  # Type checking can be strict
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v --cov=src/ilmanhinta --cov-report=xml
+        env:
+          FINGRID_API_KEY: "test_key"
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build -t ilmanhinta:${{ github.sha }} .
+
+      - name: Test Docker image
+        run: |
+          docker run --rm ilmanhinta:${{ github.sha }} python -c "import ilmanhinta; print(ilmanhinta.__version__)"
