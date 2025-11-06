@@ -1,53 +1,35 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 echo "🚀 Ilmanhinta Quick Start"
 echo "=========================="
 echo ""
 
-# Check if uv is installed
+# Ensure uv exists (Makefile relies on it)
 if ! command -v uv &> /dev/null; then
-    echo "📦 Installing uv..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.cargo/bin:$PATH"
-fi
-
-echo "✅ uv is installed"
-echo ""
-
-# Install dependencies
-echo "📦 Installing dependencies..."
-uv pip install -e ".[dev]"
-echo "✅ Dependencies installed"
-echo ""
-
-# Set up pre-commit
-echo "🔧 Setting up pre-commit hooks..."
-pre-commit install
-echo "✅ Pre-commit hooks installed"
-echo ""
-
-# Create .env if it doesn't exist
-if [ ! -f .env ]; then
-    echo "📝 Creating .env file..."
-    cp .env.example .env
-    echo "⚠️  Please edit .env and add your FINGRID_API_KEY"
+  echo "📦 Installing uv..."
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.cargo/bin:$PATH"
 else
-    echo "✅ .env file already exists"
+  echo "✅ uv is installed"
 fi
-echo ""
 
-# Create data directories
-echo "📁 Creating data directories..."
-mkdir -p data/{raw,processed,models} dagster_home
-echo "✅ Data directories created"
-echo ""
+MODE=${1:-}
+if [ "$MODE" = "--cloud" ]; then
+  echo "🛠  Running 'make setup-cloud' (env, dirs, install, Railway)"
+  make setup-cloud
+else
+  echo "🛠  Running 'make setup' (env, dirs, install)"
+  make setup
+fi
 
-echo "✨ Setup complete!"
 echo ""
 echo "Next steps:"
-echo "1. Edit .env and add your Fingrid API key from https://data.fingrid.fi"
-echo "2. Run the data ingestion: dagster dev -m ilmanhinta.dagster"
-echo "3. Start the API: uvicorn ilmanhinta.api.main:app --reload"
+echo "1) Edit .env and add your Fingrid API key from https://data.fingrid.fi"
+echo "2) Start Dagster:  make run-dagster"
+echo "3) Start the API:  make run-api"
+echo "4) Deploy to Railway:  make deploy"
+echo "   Tip: use 'scripts/quickstart.sh --cloud' or 'make setup-cloud' to set up Railway"
+echo "   Set AUTO_INSTALL_RAILWAY=1 to auto-install the Railway CLI"
 echo ""
-echo "📚 Read the README.md for more information"
+echo "📚 Read README.md for full details"

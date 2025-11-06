@@ -3,7 +3,6 @@
 from datetime import timedelta
 
 import polars as pl
-from loguru import logger
 
 from ilmanhinta.models.fingrid import FingridDataPoint
 from ilmanhinta.models.fmi import FMIObservation
@@ -67,10 +66,10 @@ class TemporalJoiner:
         within the specified tolerance window.
         """
         if consumption_df.is_empty() or weather_df.is_empty():
-            logger.warning("Empty dataframe provided for temporal join")
+            logfire.warning("Empty dataframe provided for temporal join")
             return pl.DataFrame()
 
-        logger.info(
+        logfire.info(
             f"Performing temporal join: {len(consumption_df)} consumption records, "
             f"{len(weather_df)} weather records"
         )
@@ -94,11 +93,11 @@ class TemporalJoiner:
         final_count = len(joined)
 
         if initial_count > final_count:
-            logger.warning(
+            logfire.warning(
                 f"Dropped {initial_count - final_count} rows due to missing weather data"
             )
 
-        logger.info(f"Temporal join completed: {len(joined)} matched records")
+        logfire.info(f"Temporal join completed: {len(joined)} matched records")
 
         return joined
 
@@ -132,6 +131,6 @@ class TemporalJoiner:
             .rename({"timestamp_hourly": "timestamp"})
         )
 
-        logger.info(f"Aligned to hourly resolution: {len(aligned)} records")
+        logfire.info(f"Aligned to hourly resolution: {len(aligned)} records")
 
         return aligned

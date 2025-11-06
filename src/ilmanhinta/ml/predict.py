@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import polars as pl
-from loguru import logger
 
 from ilmanhinta.clients.fingrid import FingridClient
 from ilmanhinta.clients.fmi import FMIClient
@@ -28,7 +27,7 @@ class Predictor:
 
         Returns hourly predictions with confidence intervals.
         """
-        logger.info("Generating 24-hour consumption forecast")
+        logfire.info("Generating 24-hour consumption forecast")
 
         # 1. Fetch historical consumption (for lag features)
         historical_consumption = await self.fingrid_client.fetch_realtime_consumption(hours=24 * 7)
@@ -39,7 +38,7 @@ class Predictor:
         forecast_df = TemporalJoiner.fmi_to_polars(weather_forecast.observations)
 
         if forecast_df.is_empty():
-            logger.error("No weather forecast available")
+            logfire.error("No weather forecast available")
             return []
 
         # 3. Align to hourly resolution
@@ -134,7 +133,7 @@ class Predictor:
                     "timestamp"
                 )
 
-        logger.info(f"Generated {len(predictions)} hourly predictions")
+        logfire.info(f"Generated {len(predictions)} hourly predictions")
 
         return predictions
 
@@ -146,7 +145,7 @@ class Predictor:
             return None
 
         peak = max(predictions, key=lambda p: p.predicted_consumption_mw)
-        logger.info(
+        logfire.info(
             f"Peak consumption predicted at {peak.timestamp}: {peak.predicted_consumption_mw:.2f} MW"
         )
 
