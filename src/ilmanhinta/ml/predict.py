@@ -6,6 +6,7 @@ import polars as pl
 
 from ilmanhinta.clients.fingrid import FingridClient
 from ilmanhinta.clients.fmi import FMIClient
+from ilmanhinta.logging import logfire
 from ilmanhinta.ml.model import ConsumptionModel
 from ilmanhinta.models.fmi import PredictionOutput
 from ilmanhinta.processing.features import FeatureEngineer

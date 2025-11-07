@@ -1,8 +1,0 @@
-{
-  "$schema": "https://schema.railpack.com",
-  "provider": "python",
-  "deploy": {
-    "aptPackages": ["gcc", "libc6-dev", "libgomp1"],
-    "startCommand": "bash entrypoint-api.sh"
-  }
-}

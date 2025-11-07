@@ -1,8 +1,8 @@
-"""FastAPI application for serving energy consumption predictions."""
+"""FastAPI application exposing precomputed energy consumption predictions."""
 
+import os
 import time
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
@@ -10,8 +10,8 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
 from ilmanhinta.config import settings
+from ilmanhinta.db.prediction_store import fetch_latest_predictions, get_prediction_status
 from ilmanhinta.logging import logfire
-from ilmanhinta.ml.predict import Predictor
 from ilmanhinta.models.fmi import PredictionOutput
 
 from .metrics import (
@@ -32,8 +32,7 @@ app = FastAPI(
 # Instrument FastAPI with Logfire for automatic tracing
 logfire.instrument_fastapi(app)
 
-# Global predictor instance (loaded once at startup)
-predictor: Predictor | None = None
+DEFAULT_MODEL_TYPE = os.getenv("PREDICTION_MODEL_TYPE", "lightgbm")
 
 
 class PeakPrediction(BaseModel):
@@ -51,31 +50,9 @@ class HealthCheck(BaseModel):
     """Health check response."""
 
     status: str
-    model_loaded: bool
+    predictions_available: bool
+    latest_prediction_timestamp: datetime | None
     model_version: str | None
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    """Load model on startup."""
-    global predictor
-
-    logfire.info("Starting Ilmanhinta API")
-
-    model_path = Path("data/models/model_latest.pkl")
-    if not model_path.exists():
-        logfire.warn(f"Model not found at {model_path}, API will not serve predictions")
-        return
-
-    try:
-        predictor = Predictor(model_path)
-        logfire.info(f"Model loaded: version {predictor.model.model_version}")
-
-        # Set model version metric
-        model_version_info.labels(version=predictor.model.model_version).set(1)
-
-    except Exception as e:
-        logfire.error(f"Failed to load model: {e}")
 
 
 @app.middleware("http")
@@ -101,24 +78,46 @@ async def metrics_middleware(request: Request, call_next):  # type: ignore
     return response
 
 
+def _prediction_status() -> HealthCheck:
+    """Build a health response from stored predictions."""
+    status = get_prediction_status(model_type=DEFAULT_MODEL_TYPE)
+    if status["model_version"]:
+        model_version_info.labels(version=status["model_version"]).set(1)
+    return HealthCheck(
+        status="healthy",
+        predictions_available=status["available"],
+        latest_prediction_timestamp=status["latest_timestamp"],
+        model_version=status["model_version"],
+    )
+
+
+def _ensure_predictions(limit: int) -> list[PredictionOutput]:
+    """Fetch predictions or raise a 503 if none exist."""
+    predictions = fetch_latest_predictions(limit=limit, model_type=DEFAULT_MODEL_TYPE)
+    if not predictions:
+        raise HTTPException(status_code=503, detail="Predictions not available yet")
+    return predictions
+
+
+def _observe_predictions(predictions: list[PredictionOutput]) -> None:
+    """Update Prometheus metrics for the latest fetch."""
+    predictions_total.inc(len(predictions))
+    peak = max(predictions, key=lambda p: p.predicted_consumption_mw)
+    prediction_value_mw.set(peak.predicted_consumption_mw)
+    if peak.model_version:
+        model_version_info.labels(version=peak.model_version).set(1)
+
+
 @app.get("/", response_model=HealthCheck)
 async def root() -> HealthCheck:
     """Root endpoint with health check."""
-    return HealthCheck(
-        status="healthy",
-        model_loaded=predictor is not None and predictor.model.model is not None,
-        model_version=predictor.model.model_version if predictor else None,
-    )
+    return _prediction_status()
 
 
 @app.get("/health", response_model=HealthCheck)
 async def health() -> HealthCheck:
     """Health check endpoint."""
-    return HealthCheck(
-        status="healthy",
-        model_loaded=predictor is not None and predictor.model.model is not None,
-        model_version=predictor.model.model_version if predictor else None,
-    )
+    return _prediction_status()
 
 
 @app.get("/predict/peak", response_model=PeakPrediction)
@@ -128,42 +127,20 @@ async def predict_peak_consumption() -> PeakPrediction:
 
     Returns the hour with the highest predicted consumption.
     """
-    if predictor is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+    predictions = _ensure_predictions(settings.prediction_horizon_hours)
+    _observe_predictions(predictions)
 
-    try:
-        logfire.info("Generating 24h peak consumption forecast")
+    peak = max(predictions, key=lambda p: p.predicted_consumption_mw)
+    logfire.info(f"Peak prediction: {peak.predicted_consumption_mw:.2f} MW at {peak.timestamp}")
 
-        # Get all predictions for next 24h
-        predictions = await predictor.predict_next_24h()
-
-        if not predictions:
-            raise HTTPException(status_code=500, detail="Failed to generate predictions")
-
-        # Find peak
-        peak = await predictor.find_peak_consumption(predictions)
-
-        if peak is None:
-            raise HTTPException(status_code=500, detail="No peak found in predictions")
-
-        # Update metrics
-        predictions_total.inc(len(predictions))
-        prediction_value_mw.set(peak.predicted_consumption_mw)
-
-        logfire.info(f"Peak prediction: {peak.predicted_consumption_mw:.2f} MW at {peak.timestamp}")
-
-        return PeakPrediction(
-            peak_timestamp=peak.timestamp,
-            peak_consumption_mw=peak.predicted_consumption_mw,
-            confidence_lower=peak.confidence_lower,
-            confidence_upper=peak.confidence_upper,
-            model_version=peak.model_version,
-            generated_at=datetime.utcnow(),
-        )
-
-    except Exception as e:
-        logfire.error(f"Prediction error: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) from None
+    return PeakPrediction(
+        peak_timestamp=peak.timestamp,
+        peak_consumption_mw=peak.predicted_consumption_mw,
+        confidence_lower=peak.confidence_lower,
+        confidence_upper=peak.confidence_upper,
+        model_version=peak.model_version,
+        generated_at=datetime.utcnow(),
+    )
 
 
 @app.get("/predict/forecast", response_model=list[PredictionOutput])
@@ -173,31 +150,10 @@ async def predict_24h_forecast() -> list[PredictionOutput]:
 
     Returns hourly predictions for the next 24 hours.
     """
-    if predictor is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-
-    try:
-        logfire.info("Generating 24h hourly forecast")
-
-        predictions = await predictor.predict_next_24h()
-
-        if not predictions:
-            raise HTTPException(status_code=500, detail="Failed to generate predictions")
-
-        # Update metrics
-        predictions_total.inc(len(predictions))
-
-        if predictions:
-            peak = max(predictions, key=lambda p: p.predicted_consumption_mw)
-            prediction_value_mw.set(peak.predicted_consumption_mw)
-
-        logfire.info(f"Generated {len(predictions)} hourly predictions")
-
-        return predictions
-
-    except Exception as e:
-        logfire.error(f"Forecast error: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) from None
+    predictions = _ensure_predictions(settings.prediction_horizon_hours)
+    _observe_predictions(predictions)
+    logfire.info(f"Serving {len(predictions)} cached hourly predictions")
+    return predictions
 
 
 @app.get("/metrics")

@@ -375,8 +375,12 @@ railway link
 # Set required variables in Railway (never commit secrets)
 railway variables set FINGRID_API_KEY=$FINGRID_API_KEY
 
-# Deploy (reads railway.json)
-make deploy  # or: railway up
+# Deploy both services (services/api + services/etl)
+make deploy
+
+# Deploy a single service (if needed)
+make deploy-api   # FastAPI frontend
+make deploy-etl   # Dagster workers
 
 # If Railway CLI is not installed:
 # - The Makefile shows install instructions, or auto-installs when set:
@@ -391,8 +395,9 @@ railway open
 
 Notes:
 
-- `railway.json` defines a persistent volume mounted at `/app/data` for DuckDB, models, and parquet files. Railway provisions it on first deploy.
-- Railway injects `PORT`; the container listens on `${PORT}` or defaults to `8000` for local runs.
+- `services/api/railway.json` and `services/etl/railway.json` describe the two services. Run `railway up` (or `make deploy-*`) from those folders so Railway knows which entrypoint to use.
+- Attach a volume per service and mount it at `/app/data` to persist DuckDB + model files on ETL and cache files on the API.
+- Railway injects `PORT`; both processes listen on `${PORT}` (or `4000` for the Dagster gRPC server, configured via `scripts/start-etl.sh`).
 
 ### Environment Variables
 
