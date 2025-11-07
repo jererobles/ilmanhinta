@@ -14,10 +14,12 @@ from dagster import (
 from ilmanhinta.clients.fingrid import FingridClient
 from ilmanhinta.clients.fmi import FMIClient
 from ilmanhinta.db import DuckDBClient
+from ilmanhinta.db.prediction_store import store_predictions
 from ilmanhinta.logging import logfire
 from ilmanhinta.ml.ensemble import EnsemblePredictor
 from ilmanhinta.ml.model import ConsumptionModel
 from ilmanhinta.ml.prophet_model import ProphetConsumptionModel
+from ilmanhinta.ml.predict import Predictor
 from ilmanhinta.processing.features import FeatureEngineer
 from ilmanhinta.processing.joins import TemporalJoiner
 
@@ -223,6 +225,30 @@ def trained_ensemble_model(context: AssetExecutionContext) -> Path:
     return output_path
 
 
+@asset(deps=[trained_lightgbm_model])
+async def hourly_forecast_predictions(context: AssetExecutionContext) -> int:
+    """Generate the next 24-hour forecast and persist it for the API."""
+    logfire.info("Generating scheduled 24h forecast")
+
+    model_path = DATA_DIR / "models" / "lightgbm_latest.pkl"
+    if not model_path.exists():
+        raise ValueError(f"LightGBM model not found at {model_path}")
+
+    predictor = Predictor(model_path)
+
+    try:
+        predictions = await predictor.predict_next_24h()
+    finally:
+        await predictor.close()
+
+    if not predictions:
+        raise ValueError("Prediction pipeline returned no data")
+
+    stored = store_predictions(predictions, model_type="lightgbm")
+    context.log.info(f"Stored {stored} scheduled predictions")
+    return stored
+
+
 # Define jobs
 ingest_job = define_asset_job(
     name="ingest_data",
@@ -241,6 +267,11 @@ train_job = define_asset_job(
     ],
 )
 
+forecast_job = define_asset_job(
+    name="forecast_next_24h",
+    selection=[hourly_forecast_predictions],
+)
+
 # Define schedules
 ingest_schedule = ScheduleDefinition(
     job=ingest_job,
@@ -252,6 +283,11 @@ train_schedule = ScheduleDefinition(
     cron_schedule="0 2 * * *",  # Daily at 2 AM
 )
 
+forecast_schedule = ScheduleDefinition(
+    job=forecast_job,
+    cron_schedule="5 * * * *",  # Hourly, shortly after ingestion
+)
+
 # Definitions
 defs = Definitions(
     assets=[
@@ -261,7 +297,8 @@ defs = Definitions(
         trained_lightgbm_model,
         trained_prophet_model,
         trained_ensemble_model,
+        hourly_forecast_predictions,
     ],
-    jobs=[ingest_job, train_job],
-    schedules=[ingest_schedule, train_schedule],
+    jobs=[ingest_job, train_job, forecast_job],
+    schedules=[ingest_schedule, train_schedule, forecast_schedule],
 )

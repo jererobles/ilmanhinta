@@ -1,6 +1,6 @@
 .PHONY: help install lint format test clean run-api run-dagster docker-build docker-run deploy setup setup-cloud check-env ensure-dirs \
 	railway-help railway-login railway-init railway-link railway-open railway-logs railway-set-fingrid railway-deploy railway-check \
-	railway-auth railway-project-setup railway-service-setup railway-secrets
+	railway-auth railway-project-setup railway-service-setup railway-secrets deploy-api deploy-etl
 
 RAILWAY_PROJECT_NAME ?= ilmanhinta
 RAILWAY_SERVICE_NAME ?= app
@@ -38,7 +38,9 @@ help:
 	@echo "  make run-dagster   Start Dagster UI"
 	@echo "  make docker-build  Build Docker image"
 	@echo "  make docker-run    Run Docker container"
-	@echo "  make deploy        Deploy to Railway"
+	@echo "  make deploy        Deploy both services to Railway"
+	@echo "  make deploy-api    Deploy only the API service"
+	@echo "  make deploy-etl    Deploy only the ETL service"
 	@echo "  make check-env     Validate required env vars"
 	@echo ""
 	@echo "Railway helpers:"
@@ -173,10 +175,20 @@ docker-run:
 	@echo "🐳 Running Docker container..."
 	docker run -p 8000:8000 --env-file .env ilmanhinta:latest
 
-deploy: railway-check
-	@echo "🚀 Deploying to Railway..."
-	railway up
+deploy:
+	@$(MAKE) deploy-api
+	@$(MAKE) deploy-etl
 	@echo "✅ Deployment complete"
+
+deploy-api:
+	@$(MAKE) railway-check
+	@echo "🚀 Deploying API service..."
+	railway up --path-as-root services/api
+
+deploy-etl:
+	@$(MAKE) railway-check
+	@echo "🚀 Deploying ETL service..."
+	cd services/etl && railway up --path-as-root ../..
 
 railway-help:
 	@echo "Railway helper commands:"

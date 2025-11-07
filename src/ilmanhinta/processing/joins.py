@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import polars as pl
 
+from ilmanhinta.logging import logfire
 from ilmanhinta.models.fingrid import FingridDataPoint
 from ilmanhinta.models.fmi import FMIObservation
 

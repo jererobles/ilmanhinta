@@ -2,6 +2,8 @@
 
 import polars as pl
 
+from ilmanhinta.logging import logfire
+
 
 class FeatureEngineer:
     """Create features for ML model using sliding windows and time-based transformations."""
