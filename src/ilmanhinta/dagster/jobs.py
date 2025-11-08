@@ -5,21 +5,25 @@ from pathlib import Path
 
 from dagster import (
     AssetExecutionContext,
+    DefaultSensorStatus,
     Definitions,
+    RunRequest,
     ScheduleDefinition,
+    SensorEvaluationContext,
     asset,
     define_asset_job,
+    sensor,
 )
 
 from ilmanhinta.clients.fingrid import FingridClient
 from ilmanhinta.clients.fmi import FMIClient
-from ilmanhinta.db import DuckDBClient
-from ilmanhinta.db.prediction_store import store_predictions
+from ilmanhinta.db.postgres_client import PostgresClient
+from ilmanhinta.db.prediction_store import get_prediction_status, store_predictions
 from ilmanhinta.logging import logfire
 from ilmanhinta.ml.ensemble import EnsemblePredictor
 from ilmanhinta.ml.model import ConsumptionModel
-from ilmanhinta.ml.prophet_model import ProphetConsumptionModel
 from ilmanhinta.ml.predict import Predictor
+from ilmanhinta.ml.prophet_model import ProphetConsumptionModel
 from ilmanhinta.processing.features import FeatureEngineer
 from ilmanhinta.processing.joins import TemporalJoiner
 
@@ -30,28 +34,35 @@ DATA_DIR.mkdir(exist_ok=True)
 
 @asset
 async def fingrid_consumption_data(context: AssetExecutionContext) -> Path:
-    """Fetch electricity consumption data from Fingrid."""
-    logfire.info("Fetching Fingrid consumption data")
+    """Fetch all electricity data from Fingrid (consumption, production, wind, nuclear).
+
+    This replaces the old single-dataset approach with a comprehensive fetch
+    that ensures all features are available for both training and prediction.
+    """
+    logfire.info("Fetching all Fingrid electricity data (consumption, production, wind, nuclear)")
 
     async with FingridClient() as client:
-        # Fetch last 30 days for training
-        data = await client.fetch_realtime_consumption(hours=24 * 30)
+        # Fetch last 30 days for training - ALL datasets in parallel
+        all_data = await client.fetch_all_electricity_data(hours=24 * 30)
 
-    # Convert to Polars DataFrame
-    df = TemporalJoiner.fingrid_to_polars(data)
+    # Merge all datasets into a single DataFrame with all features
+    df = TemporalJoiner.merge_fingrid_datasets(all_data)
 
     # Save to parquet (for backup/historical)
-    output_path = DATA_DIR / "raw" / f"fingrid_consumption_{datetime.utcnow().date()}.parquet"
+    output_path = DATA_DIR / "raw" / f"fingrid_electricity_{datetime.utcnow().date()}.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(output_path)
 
-    # Also write to DuckDB for OLAP queries
-    db = DuckDBClient()
+    # Write to PostgreSQL + TimescaleDB
+    db = PostgresClient()
     rows_inserted = db.insert_consumption(df)
     db.close()
 
     context.log.info(
-        f"Saved {len(df)} consumption records to {output_path} and {rows_inserted} to DuckDB"
+        f"Saved {len(df)} electricity records to {output_path} and {rows_inserted} to PostgreSQL"
+    )
+    logfire.info(
+        f"Fetched features: {df.columns} - ensuring feature parity for training & prediction"
     )
     return output_path
 
@@ -69,35 +80,47 @@ def fmi_weather_data(context: AssetExecutionContext) -> Path:
     # Convert to Polars DataFrame
     df = TemporalJoiner.fmi_to_polars(data.observations)
 
+    # Add station_id column (required by database schema)
+    import polars as pl
+
+    df = df.with_columns(pl.lit(client.station_id).alias("station_id"))
+
     # Save to parquet (for backup/historical)
     output_path = DATA_DIR / "raw" / f"fmi_weather_{datetime.utcnow().date()}.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(output_path)
 
-    # Also write to DuckDB for OLAP queries
-    db = DuckDBClient()
-    rows_inserted = db.insert_weather(df, data_type="observation")
+    # Write to PostgreSQL + TimescaleDB
+    db = PostgresClient()
+    rows_inserted = db.insert_weather(df, station_id=client.station_id)
     db.close()
 
     context.log.info(
-        f"Saved {len(df)} weather records to {output_path} and {rows_inserted} to DuckDB"
+        f"Saved {len(df)} weather records to {output_path} and {rows_inserted} to PostgreSQL"
     )
     return output_path
 
 
 @asset(deps=[fingrid_consumption_data, fmi_weather_data])
 def processed_training_data(context: AssetExecutionContext) -> Path:
-    """Join and process data for model training using DuckDB."""
-    logfire.info("Processing training data from DuckDB")
+    """Join and process data for model training using PostgreSQL + TimescaleDB."""
+    logfire.info("Processing training data from PostgreSQL")
     from datetime import timedelta
 
-    # Query last 30 days from DuckDB (replaces manual Parquet scanning)
-    db = DuckDBClient()
+    # Query last 30 days from PostgreSQL (uses LATERAL JOIN for temporal alignment)
+    db = PostgresClient()
     end_time = datetime.utcnow()
     start_time = end_time - timedelta(days=30)
 
-    # DuckDB does the temporal join for us (replaces TemporalJoiner.temporal_join)
+    # Debug: Check what's in the database
+    stats = db.get_stats()
+    context.log.info(f"PostgreSQL stats before join: {stats}")
+
+    # PostgreSQL LATERAL JOIN does the temporal join for us
     joined_df = db.get_joined_training_data(start_time, end_time)
+    context.log.info(
+        f"Joined {len(joined_df)} rows from PostgreSQL (time range: {start_time} to {end_time})"
+    )
 
     # Align to hourly (still needed for consistent intervals)
     aligned_df = TemporalJoiner.align_to_hourly(joined_df)
@@ -156,11 +179,10 @@ def trained_lightgbm_model(context: AssetExecutionContext) -> Path:
 def trained_prophet_model(context: AssetExecutionContext) -> Path:
     """Train Prophet model for seasonal forecasting."""
     logfire.info("Training Prophet seasonal forecasting model")
-    import polars as pl
     from datetime import timedelta
 
-    # Query raw data from DuckDB for Prophet (needs timestamp + target)
-    db = DuckDBClient()
+    # Query raw data from PostgreSQL for Prophet (needs timestamp + target)
+    db = PostgresClient()
     end_time = datetime.utcnow()
     start_time = end_time - timedelta(days=30)
 
@@ -226,8 +248,10 @@ def trained_ensemble_model(context: AssetExecutionContext) -> Path:
 
 
 @asset(deps=[trained_lightgbm_model])
-async def hourly_forecast_predictions(context: AssetExecutionContext) -> int:
+def hourly_forecast_predictions(context: AssetExecutionContext) -> int:
     """Generate the next 24-hour forecast and persist it for the API."""
+    import asyncio
+
     logfire.info("Generating scheduled 24h forecast")
 
     model_path = DATA_DIR / "models" / "lightgbm_latest.pkl"
@@ -236,10 +260,14 @@ async def hourly_forecast_predictions(context: AssetExecutionContext) -> int:
 
     predictor = Predictor(model_path)
 
-    try:
-        predictions = await predictor.predict_next_24h()
-    finally:
-        await predictor.close()
+    # Run async function in event loop
+    async def _generate_predictions():
+        try:
+            return await predictor.predict_next_24h()
+        finally:
+            await predictor.close()
+
+    predictions = asyncio.run(_generate_predictions())
 
     if not predictions:
         raise ValueError("Prediction pipeline returned no data")
@@ -272,6 +300,20 @@ forecast_job = define_asset_job(
     selection=[hourly_forecast_predictions],
 )
 
+# Bootstrap job - runs full pipeline from scratch
+bootstrap_job = define_asset_job(
+    name="bootstrap_system",
+    selection=[
+        fingrid_consumption_data,
+        fmi_weather_data,
+        processed_training_data,
+        trained_lightgbm_model,
+        trained_prophet_model,
+        trained_ensemble_model,
+        hourly_forecast_predictions,
+    ],
+)
+
 # Define schedules
 ingest_schedule = ScheduleDefinition(
     job=ingest_job,
@@ -288,6 +330,44 @@ forecast_schedule = ScheduleDefinition(
     cron_schedule="5 * * * *",  # Hourly, shortly after ingestion
 )
 
+
+# Sensor to detect missing predictions and auto-bootstrap
+@sensor(
+    job=bootstrap_job,
+    minimum_interval_seconds=300,  # Check every 5 minutes
+    default_status=DefaultSensorStatus.RUNNING,  # Auto-enabled on startup
+)
+def bootstrap_sensor(context: SensorEvaluationContext):
+    """Automatically bootstrap the system when predictions are missing.
+
+    This sensor checks if predictions exist and triggers the bootstrap job
+    if none are found. It's useful for:
+    - First-time setup
+    - After database resets
+    - Recovery from data loss
+    """
+    try:
+        status = get_prediction_status(model_type="lightgbm")
+
+        if not status["available"]:
+            context.log.warning("No predictions found - triggering bootstrap job")
+            yield RunRequest(
+                run_key=f"bootstrap_{datetime.utcnow().isoformat()}",
+                tags={
+                    "reason": "missing_predictions",
+                    "auto_triggered": "true",
+                },
+            )
+        else:
+            context.log.info(
+                f"Predictions available (latest: {status['latest_timestamp']}, "
+                f"version: {status['model_version']})"
+            )
+    except Exception as e:
+        context.log.error(f"Error checking prediction status: {e}")
+        # Don't trigger on errors to avoid infinite loops
+
+
 # Definitions
 defs = Definitions(
     assets=[
@@ -299,6 +379,7 @@ defs = Definitions(
         trained_ensemble_model,
         hourly_forecast_predictions,
     ],
-    jobs=[ingest_job, train_job, forecast_job],
+    jobs=[ingest_job, train_job, forecast_job, bootstrap_job],
     schedules=[ingest_schedule, train_schedule, forecast_schedule],
+    sensors=[bootstrap_sensor],
 )

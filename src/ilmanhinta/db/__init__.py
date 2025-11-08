@@ -1,5 +1,9 @@
-"""DuckDB data layer for time-series storage and querying."""
+"""PostgreSQL + TimescaleDB data layer for time-series storage and querying.
 
-from .duckdb_client import DuckDBClient, get_db_path
+This module provides PostgreSQL clients optimized for time-series data with
+TimescaleDB extensions including compression, hypertables, and continuous aggregates.
+"""
 
-__all__ = ["DuckDBClient", "get_db_path"]
+from .postgres_client import PostgresClient, get_database_url
+
+__all__ = ["PostgresClient", "get_database_url"]

@@ -151,16 +151,22 @@ class FeatureEngineer:
         df = FeatureEngineer.add_rolling_features(df, target_col)
         df = FeatureEngineer.add_weather_interactions(df)
 
-        # Optionally drop rows with NaN values (from lags/rolling windows)
+        # Drop rows with nulls in critical columns only
+        # (lag/rolling features will have nulls in first N rows - that's expected)
         if drop_nulls:
             initial_count = len(df)
-            df = df.drop_nulls()
+
+            # Only drop if target or essential weather features are null
+            critical_cols = [target_col, "temperature", "humidity", "wind_speed", "pressure"]
+            existing_critical = [col for col in critical_cols if col in df.columns]
+
+            df = df.drop_nulls(subset=existing_critical)
             final_count = len(df)
 
             if initial_count > final_count:
                 logfire.info(
-                    f"Dropped {initial_count - final_count} rows with missing values "
-                    f"(from lag/rolling features)"
+                    f"Dropped {initial_count - final_count} rows with missing critical values "
+                    f"(target or weather features)"
                 )
 
         logfire.info(

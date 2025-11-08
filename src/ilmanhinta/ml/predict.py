@@ -30,9 +30,10 @@ class Predictor:
         """
         logfire.info("Generating 24-hour consumption forecast")
 
-        # 1. Fetch historical consumption (for lag features)
-        historical_consumption = await self.fingrid_client.fetch_realtime_consumption(hours=24 * 7)
-        consumption_df = TemporalJoiner.fingrid_to_polars(historical_consumption)
+        # 1. Fetch historical electricity data (consumption + production + wind + nuclear)
+        # This ensures we have ALL features that were used during training
+        historical_data = await self.fingrid_client.fetch_all_electricity_data(hours=24 * 7)
+        consumption_df = TemporalJoiner.merge_fingrid_datasets(historical_data)
 
         # 2. Fetch weather forecast
         weather_forecast = self.fmi_client.fetch_forecast(hours=24)
@@ -47,7 +48,7 @@ class Predictor:
         forecast_df = TemporalJoiner.align_to_hourly(forecast_df)
 
         # Ensure both DataFrames share the same schema before vertical concatenation.
-        # consumption_df currently has columns: [timestamp, consumption_mw]
+        # consumption_df now has: [timestamp, consumption_mw, production_mw, wind_mw, nuclear_mw]
         # forecast_df has weather columns: [temperature, humidity, wind_speed, wind_direction, pressure, precipitation, cloud_cover]
         # Add missing weather columns to consumption_df as nulls so we can vstack later.
         weather_cols = [
@@ -66,19 +67,44 @@ class Predictor:
                     pl.lit(None, dtype=pl.Float64).alias(col)
                 )
 
+        logfire.info(
+            f"Historical data columns: {consumption_df.columns} - includes all electricity features"
+        )
+
         # 4. For each forecast hour, create features using historical data
         predictions: list[PredictionOutput] = []
+
+        # Get the latest known values for electricity features to use in forecasts
+        latest_production = (
+            consumption_df.select("production_mw").tail(1)[0, 0]
+            if "production_mw" in consumption_df.columns
+            else None
+        )
+        latest_wind = (
+            consumption_df.select("wind_mw").tail(1)[0, 0]
+            if "wind_mw" in consumption_df.columns
+            else None
+        )
+        latest_nuclear = (
+            consumption_df.select("nuclear_mw").tail(1)[0, 0]
+            if "nuclear_mw" in consumption_df.columns
+            else None
+        )
 
         for i in range(len(forecast_df)):
             forecast_row = forecast_df[i]
             forecast_time = forecast_row["timestamp"][0]
 
             # Create a combined dataframe with history + current forecast point.
-            # The appended single-row frame must match consumption_df schema.
+            # For electricity features (production, wind, nuclear), use latest known values
+            # since we don't have forecasts for these (yet - could be added later)
             current_row = pl.DataFrame(
                 {
                     "timestamp": [forecast_time],
                     "consumption_mw": [None],  # This is what we're predicting
+                    "production_mw": [latest_production],  # Use latest known value
+                    "wind_mw": [latest_wind],  # Use latest known value
+                    "nuclear_mw": [latest_nuclear],  # Use latest known value
                     "temperature": [forecast_row["temperature"][0]],
                     "humidity": [forecast_row["humidity"][0]],
                     "wind_speed": [forecast_row["wind_speed"][0]],
@@ -115,11 +141,14 @@ class Predictor:
                     )
 
                 # Update consumption_df with the prediction for next iteration.
-                # Keep schema identical by adding weather columns as nulls for the appended row.
+                # Keep schema identical including electricity features and weather columns.
                 consumption_update_row = pl.DataFrame(
                     {
                         "timestamp": [forecast_time],
                         "consumption_mw": [float(row["predicted_consumption_mw"][0])],
+                        "production_mw": [latest_production],  # Keep using latest known value
+                        "wind_mw": [latest_wind],  # Keep using latest known value
+                        "nuclear_mw": [latest_nuclear],  # Keep using latest known value
                         "temperature": [None],
                         "humidity": [None],
                         "wind_speed": [None],

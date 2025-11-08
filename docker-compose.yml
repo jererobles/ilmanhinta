@@ -1,0 +1,89 @@
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    env_file:
+      - .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_timescaledb_enhanced.sql:/docker-entrypoint-initdb.d/01_init.sql
+      - ./init.sql:/docker-entrypoint-initdb.d/02_init_legacy.sql
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U api -d ilmanhinta"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  dagster-daemon:
+    build: .
+    command: dagster-daemon run
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /data
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    volumes:
+      - ./src:/app/src
+      - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml
+      - dagster_storage:/opt/dagster/dagster_home/storage
+      - pipeline_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dagster-webserver:
+    build: .
+    command: dagster-webserver -h 0.0.0.0 -p 3000
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./src:/app/src
+      - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml
+      - dagster_storage:/opt/dagster/dagster_home/storage
+    depends_on:
+      - dagster-daemon
+    restart: unless-stopped
+
+  api:
+    build: .
+    command: uvicorn ilmanhinta.api.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    labels:
+      - "prometheus.scrape=true"
+      - "prometheus.port=8000"
+      - "prometheus.path=/metrics"
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  dagster_storage:
+  pipeline_data:
+  prometheus_data:

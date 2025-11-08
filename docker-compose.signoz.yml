@@ -1,0 +1,31 @@
+# SigNoz Integration Overlay
+#
+# Use this file to enable SigNoz observability for your services.
+#
+# IMPORTANT: Only use this after you've installed SigNoz (see SIGNOZ_SETUP.md)
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.signoz.yml up -d
+#
+# Or add to your Makefile:
+#   docker-compose -f docker-compose.yml -f docker-compose.signoz.yml up -d
+
+services:
+  api:
+    networks:
+      - signoz-net
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: ilmanhinta-api
+
+  dagster-daemon:
+    networks:
+      - signoz-net
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: ilmanhinta-dagster-daemon
+
+networks:
+  signoz-net:
+    external: true
+    name: signoz-net

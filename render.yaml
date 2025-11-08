@@ -1,0 +1,67 @@
+previews:
+  generation: manual
+
+# Non-Postgres services
+services:
+  # FastAPI web service
+  - type: web
+    name: ilmanhinta-api
+    runtime: python
+    region: frankfurt
+    plan: free
+    buildCommand: pip install -U pip && pip install .
+    startCommand: uvicorn ilmanhinta.api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOGFIRE_PROJECT
+        value: ilmanhinta
+      - key: LOGFIRE_ENVIRONMENT
+        value: production
+      - key: PREDICTION_MODEL_TYPE
+        value: lightgbm
+      - key: LOGFIRE_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ilmanhinta-db
+          property: connectionString
+
+  # Dagster worker for ingestion/training/scheduled predictions
+  - type: worker
+    name: ilmanhinta-etl
+    runtime: python
+    region: frankfurt
+    plan: free
+    buildCommand: pip install -U pip && pip install .
+    startCommand: bash scripts/start-etl.sh
+    envVars:
+      - key: FINGRID_API_KEY
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOGFIRE_PROJECT
+        value: ilmanhinta
+      - key: LOGFIRE_ENVIRONMENT
+        value: production
+      - key: PREDICTION_MODEL_TYPE
+        value: lightgbm
+      - key: DAGSTER_HOME
+        value: /var/data/dagster_home
+      - key: DATA_DIR
+        value: /var/data
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ilmanhinta-db
+          property: connectionString
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 10
+
+# Render Postgres instance used for sharing predictions between services
+databases:
+  - name: ilmanhinta-db
+    plan: free
+    region: frankfurt
