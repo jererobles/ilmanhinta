@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pandas as pd
 import polars as pl
@@ -125,19 +125,29 @@ class PostgresClient:
             )
             return len(pdf)
 
-    def insert_prices(self, df: pl.DataFrame, area: str = "FI") -> int:
+    def insert_prices(
+        self,
+        df: pl.DataFrame,
+        area: str = "FI",
+        price_type: str = "imbalance",
+        source: str = "fingrid",
+    ) -> int:
         """Insert electricity prices from Polars DataFrame.
 
         Args:
             df: Polars DataFrame with price data
                 Required columns: time, price_eur_mwh
             area: Price area (default: FI)
+            price_type: Type of price (imbalance, day_ahead, intraday)
+            source: Data source (fingrid, nord_pool, etc.)
 
         Returns:
             Number of rows inserted
         """
         pdf = df.to_pandas()
         pdf["area"] = area
+        pdf["price_type"] = price_type
+        pdf["source"] = source
 
         with self.session() as session:
             rows_affected = pdf.to_sql(
@@ -174,30 +184,121 @@ class PostgresClient:
             )
             return len(pdf)
 
-    def insert_predictions(
+    def insert_weather_forecast(
         self,
         df: pl.DataFrame,
-        model_type: str = "prophet",
-        model_version: str | None = None,
+        station_id: str,
+        forecast_model: str = "harmonie",
+        generated_at: datetime | None = None,
     ) -> int:
-        """Insert predictions from Polars DataFrame.
+        """Insert weather forecasts from Polars DataFrame (FMI HARMONIE).
 
         Args:
-            df: Polars DataFrame with predictions
-                Required columns: prediction_time, predicted_consumption_mw,
-                                confidence_lower, confidence_upper
-            model_type: Model type identifier
-            model_version: Optional model version string
+            df: Polars DataFrame with forecast data
+                Required columns: forecast_time (or time), temperature_c
+                Optional: wind_speed_ms, cloud_cover, humidity_percent, pressure_hpa,
+                         global_radiation_wm2
+            station_id: Weather station identifier
+            forecast_model: Model name (harmonie, ecmwf)
+            generated_at: When forecast was generated (defaults to now)
 
         Returns:
             Number of rows inserted
         """
         pdf = df.to_pandas()
 
-        # Rename columns to match database schema
+        # Rename time column if needed
+        if "time" in pdf.columns and "forecast_time" not in pdf.columns:
+            pdf = pdf.rename(columns={"time": "forecast_time"})
+
+        pdf["station_id"] = station_id
+        pdf["forecast_model"] = forecast_model
+        pdf["generated_at"] = generated_at or datetime.now(UTC)
+
+        with self.session() as session:
+            rows_affected = pdf.to_sql(
+                "weather_forecasts",
+                con=self.engine,
+                if_exists="append",
+                index=False,
+                method="multi",
+            )
+            return len(pdf)
+
+    def insert_fingrid_forecast(
+        self,
+        df: pl.DataFrame,
+        forecast_type: str,
+        unit: str = "MW",
+        update_frequency: str | None = None,
+        generated_at: datetime | None = None,
+    ) -> int:
+        """Insert Fingrid forecasts from Polars DataFrame.
+
+        Args:
+            df: Polars DataFrame with forecast data
+                Required columns: forecast_time (or time), value
+            forecast_type: Type of forecast (consumption, production, wind, price)
+            unit: Unit of measurement (MW or EUR/MWh)
+            update_frequency: How often updated (15min, hourly, daily)
+            generated_at: When forecast was generated (defaults to now)
+
+        Returns:
+            Number of rows inserted
+        """
+        pdf = df.to_pandas()
+
+        # Rename columns if needed
+        if "time" in pdf.columns and "forecast_time" not in pdf.columns:
+            pdf = pdf.rename(columns={"time": "forecast_time"})
+
+        pdf["forecast_type"] = forecast_type
+        pdf["unit"] = unit
+        if update_frequency:
+            pdf["update_frequency"] = update_frequency
+        pdf["generated_at"] = generated_at or datetime.now(UTC)
+
+        with self.session() as session:
+            rows_affected = pdf.to_sql(
+                "fingrid_forecasts",
+                con=self.engine,
+                if_exists="append",
+                index=False,
+                method="multi",
+            )
+            return len(pdf)
+
+    def insert_predictions(
+        self,
+        df: pl.DataFrame,
+        model_type: str = "production",
+        model_version: str | None = None,
+        generated_at: datetime | None = None,
+        training_end_date: datetime | None = None,
+    ) -> int:
+        """Insert price predictions from Polars DataFrame.
+
+        Args:
+            df: Polars DataFrame with predictions
+                Required columns: prediction_time (or time), predicted_price_eur_mwh
+                Optional: confidence_lower, confidence_upper, predicted_consumption_mw
+            model_type: Model identifier (production, staging, experimental, etc.)
+            model_version: Version string (e.g., 'v1.0', '2024-11-08')
+            generated_at: When predictions were generated (defaults to now)
+            training_end_date: Last date in training data
+
+        Returns:
+            Number of rows inserted
+        """
+        pdf = df.to_pandas()
+
+        # Rename columns if needed
+        if "time" in pdf.columns and "prediction_time" not in pdf.columns:
+            pdf = pdf.rename(columns={"time": "prediction_time"})
+
+        # Handle Prophet column names
         column_mapping = {
-            "timestamp": "prediction_time",
-            "yhat": "predicted_consumption_mw",
+            "yhat": "predicted_price_eur_mwh",
             "yhat_lower": "confidence_lower",
             "yhat_upper": "confidence_upper",
         }
@@ -206,10 +307,17 @@ class PostgresClient:
         pdf["model_type"] = model_type
         if model_version:
             pdf["model_version"] = model_version
+        pdf["generated_at"] = generated_at or datetime.now(UTC)
+        if training_end_date:
+            pdf["training_end_date"] = training_end_date
 
         with self.session() as session:
             rows_affected = pdf.to_sql(
-                "predictions", con=self.engine, if_exists="append", index=False, method="multi"
+                "model_predictions",
+                con=self.engine,
+                if_exists="append",
+                index=False,
+                method="multi",
             )
             return len(pdf)
 
@@ -227,7 +335,7 @@ class PostgresClient:
         Returns:
             Polars DataFrame with consumption data
         """
-        end_time = end_time or datetime.now()
+        end_time = end_time or datetime.now(UTC)
 
         query = text(
             """
@@ -259,7 +367,7 @@ class PostgresClient:
         Returns:
             Polars DataFrame with price data
         """
-        end_time = end_time or datetime.now()
+        end_time = end_time or datetime.now(UTC)
 
         query = text(
             """
@@ -294,13 +402,19 @@ class PostgresClient:
         Returns:
             Polars DataFrame with weather data
         """
-        end_time = end_time or datetime.now()
+        end_time = end_time or datetime.now(UTC)
 
         if station_id:
             query = text(
                 """
-                SELECT time, station_id, temperature_c, wind_speed_ms,
-                       cloud_cover, humidity_percent, pressure_hpa
+                SELECT time, station_id,
+                       temperature_c AS temperature,
+                       wind_speed_ms AS wind_speed,
+                       wind_direction,
+                       cloud_cover,
+                       humidity_percent AS humidity,
+                       pressure_hpa AS pressure,
+                       precipitation_mm
                 FROM weather_observations
                 WHERE time >= :start_time AND time <= :end_time
                   AND station_id = :station_id
@@ -311,8 +425,14 @@ class PostgresClient:
         else:
             query = text(
                 """
-                SELECT time, station_id, temperature_c, wind_speed_ms,
-                       cloud_cover, humidity_percent, pressure_hpa
+                SELECT time, station_id,
+                       temperature_c AS temperature,
+                       wind_speed_ms AS wind_speed,
+                       wind_direction,
+                       cloud_cover,
+                       humidity_percent AS humidity,
+                       pressure_hpa AS pressure,
+                       precipitation_mm
                 FROM weather_observations
                 WHERE time >= :start_time AND time <= :end_time
                 ORDER BY time
@@ -342,23 +462,22 @@ class PostgresClient:
         query = text(
             """
             WITH latest_run AS (
-                SELECT MAX(created_at) as latest_created
+                SELECT MAX(generated_at) as latest_generated
                 FROM predictions
                 WHERE model_type = :model_type
             )
             SELECT
-                p.prediction_time,
+                p.timestamp,
                 p.predicted_consumption_mw,
-                p.predicted_price_eur_mwh,
                 p.confidence_lower,
                 p.confidence_upper,
                 p.model_type,
                 p.model_version,
-                p.created_at
+                p.generated_at
             FROM predictions p, latest_run
-            WHERE p.created_at = latest_run.latest_created
+            WHERE p.generated_at = latest_run.latest_generated
               AND p.model_type = :model_type
-            ORDER BY p.prediction_time
+            ORDER BY p.timestamp
             LIMIT :limit
         """
         )
@@ -390,12 +509,16 @@ class PostgresClient:
                 c.time,
                 c.consumption_mw,
                 c.production_mw,
+                c.wind_mw,
+                c.nuclear_mw,
                 c.net_import_mw,
-                w.temperature_c,
-                w.wind_speed_ms,
+                w.temperature_c AS temperature,
+                w.wind_speed_ms AS wind_speed,
+                w.wind_direction,
                 w.cloud_cover,
-                w.humidity_percent,
-                w.pressure_hpa,
+                w.humidity_percent AS humidity,
+                w.pressure_hpa AS pressure,
+                w.precipitation_mm,
                 p.price_eur_mwh
             FROM electricity_consumption c
             LEFT JOIN LATERAL (
@@ -420,11 +543,145 @@ class PostgresClient:
             pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
             return pl.from_pandas(pdf)
 
+    def get_prediction_comparison(
+        self,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 100,
+    ) -> pl.DataFrame:
+        """Get prediction comparison data (ML vs Fingrid vs Actual).
+
+        Args:
+            start_time: Start timestamp (defaults to 7 days ago)
+            end_time: End timestamp (defaults to now)
+            limit: Maximum number of rows to return
+
+        Returns:
+            Polars DataFrame with comparison metrics
+        """
+        start_time = start_time or (datetime.now(UTC) - timedelta(days=7))
+        end_time = end_time or datetime.now(UTC)
+
+        query = text(
+            """
+            SELECT
+                time,
+                ml_prediction,
+                ml_lower,
+                ml_upper,
+                fingrid_price_forecast,
+                actual_price,
+                ml_absolute_error,
+                ml_percentage_error,
+                fingrid_absolute_error,
+                fingrid_percentage_error,
+                CASE ml_vs_fingrid_winner
+                    WHEN 1 THEN 'ML'
+                    WHEN -1 THEN 'Fingrid'
+                    ELSE 'Tie'
+                END as winner,
+                model_type,
+                model_version
+            FROM prediction_comparison
+            WHERE time >= :start_time AND time <= :end_time
+            ORDER BY time DESC
+            LIMIT :limit
+        """
+        )
+
+        with self.session() as session:
+            result = session.execute(
+                query, {"start_time": start_time, "end_time": end_time, "limit": limit}
+            )
+            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
+            return pl.from_pandas(pdf)
+
+    def get_performance_summary(self, hours_back: int = 24) -> dict[str, any]:
+        """Get performance summary comparing ML model vs Fingrid forecasts.
+
+        Args:
+            hours_back: Number of hours to look back
+
+        Returns:
+            Dict with performance metrics
+        """
+        query = text("SELECT * FROM get_latest_performance_summary(:hours_back)")
+
+        with self.session() as session:
+            result = session.execute(query, {"hours_back": hours_back})
+            rows = result.fetchall()
+
+            # Convert to dictionary
+            summary = {}
+            for row in rows:
+                metric = row[0]
+                ml_value = row[1]
+                fingrid_value = row[2]
+                improvement = row[3]
+
+                summary[metric] = {
+                    "ml": float(ml_value) if ml_value else None,
+                    "fingrid": float(fingrid_value) if fingrid_value else None,
+                    "improvement_pct": float(improvement) if improvement else None,
+                }
+
+            return summary
+
+    def get_hourly_performance(
+        self,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+    ) -> pl.DataFrame:
+        """Get hourly aggregated performance metrics.
+
+        Args:
+            start_time: Start timestamp (defaults to 7 days ago)
+            end_time: End timestamp (defaults to now)
+
+        Returns:
+            Polars DataFrame with hourly performance
+        """
+        start_time = start_time or (datetime.now(UTC) - timedelta(days=7))
+        end_time = end_time or datetime.now(UTC)
+
+        query = text(
+            """
+            SELECT
+                hour,
+                num_predictions,
+                ml_avg_error,
+                ml_median_error,
+                ml_avg_pct_error,
+                fingrid_avg_error,
+                fingrid_avg_pct_error,
+                ml_win_rate_pct,
+                avg_actual_price,
+                min_actual_price,
+                max_actual_price
+            FROM hourly_prediction_performance
+            WHERE hour >= :start_time AND hour <= :end_time
+            ORDER BY hour DESC
+        """
+        )
+
+        with self.session() as session:
+            result = session.execute(query, {"start_time": start_time, "end_time": end_time})
+            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
+            return pl.from_pandas(pdf)
+
     def refresh_materialized_views(self) -> None:
         """Refresh all materialized views for better query performance."""
         with self.session() as session:
-            session.execute(text("REFRESH MATERIALIZED VIEW hourly_consumption_stats"))
-            session.execute(text("REFRESH MATERIALIZED VIEW daily_price_stats"))
+            # Refresh comparison view
+            session.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY prediction_comparison"))
+
+            # Legacy views (if they exist)
+            try:
+                session.execute(text("REFRESH MATERIALIZED VIEW hourly_consumption_stats"))
+                session.execute(text("REFRESH MATERIALIZED VIEW daily_price_stats"))
+            except Exception:
+                pass  # Views might not exist yet
+
             session.commit()
 
     def get_stats(self) -> dict[str, int]:

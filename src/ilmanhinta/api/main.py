@@ -143,7 +143,7 @@ async def predict_peak_consumption() -> PeakPrediction:
         confidence_lower=peak.confidence_lower,
         confidence_upper=peak.confidence_upper,
         model_version=peak.model_version,
-        generated_at=datetime.utcnow(),
+        generated_at=datetime.now(UTC),
     )
 
 

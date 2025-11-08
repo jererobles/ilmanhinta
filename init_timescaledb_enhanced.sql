@@ -1,8 +1,20 @@
 -- Enhanced TimescaleDB setup for ilmanhinta
 -- Migration to all-in TimescaleDB architecture with compression, continuous aggregates, and analytics
 
--- Enable TimescaleDB extension
+-- =============================================================================
+-- EXTENSIONS
+-- =============================================================================
+
+-- Enable TimescaleDB extension (time-series database)
 CREATE EXTENSION IF NOT EXISTS timescaledb;
+
+-- Enable timescaledb-toolkit (advanced analytics functions)
+-- Provides: stats_agg(), time_weight(), percentile_agg(), uddsketch(), etc.
+CREATE EXTENSION IF NOT EXISTS timescaledb_toolkit;
+
+-- Enable pg_stat_monitor (query performance monitoring)
+-- Percona's enhanced version of pg_stat_statements with time-bucketed statistics
+CREATE EXTENSION IF NOT EXISTS pg_stat_monitor;
 
 -- =============================================================================
 -- CORE TABLES (Time-series data with hypertables)
@@ -155,14 +167,14 @@ CREATE INDEX IF NOT EXISTS idx_predictions_generated ON predictions(generated_at
 -- =============================================================================
 
 -- 1. Hourly consumption statistics (for dashboards)
+-- Using timescaledb-toolkit's stats_agg() for cleaner, more efficient statistics
 CREATE MATERIALIZED VIEW IF NOT EXISTS consumption_hourly
 WITH (timescaledb.continuous) AS
 SELECT
     time_bucket('1 hour', time) AS hour,
-    AVG(consumption_mw) AS avg_consumption_mw,
-    MAX(consumption_mw) AS max_consumption_mw,
-    MIN(consumption_mw) AS min_consumption_mw,
-    STDDEV(consumption_mw) AS std_consumption_mw,
+    -- Use stats_agg for consumption (stores all statistics in one aggregate)
+    stats_agg(consumption_mw) AS consumption_stats,
+    -- Individual averages for other metrics
     AVG(production_mw) AS avg_production_mw,
     AVG(wind_mw) AS avg_wind_mw,
     AVG(nuclear_mw) AS avg_nuclear_mw,
@@ -180,17 +192,16 @@ SELECT add_continuous_aggregate_policy('consumption_hourly',
 );
 
 -- 2. Daily price statistics
+-- Using timescaledb-toolkit's uddsketch for efficient percentile approximations
 CREATE MATERIALIZED VIEW IF NOT EXISTS prices_daily
 WITH (timescaledb.continuous) AS
 SELECT
     time_bucket('1 day', time) AS day,
     area,
-    AVG(price_eur_mwh) AS avg_price,
-    MAX(price_eur_mwh) AS max_price,
-    MIN(price_eur_mwh) AS min_price,
-    STDDEV(price_eur_mwh) AS price_volatility,
-    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_eur_mwh) AS median_price,
-    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY price_eur_mwh) AS p95_price
+    -- Use stats_agg for basic statistics
+    stats_agg(price_eur_mwh) AS price_stats,
+    -- Use uddsketch for percentile approximations (faster than exact percentiles)
+    uddsketch(100, 0.001, price_eur_mwh) AS price_distribution
 FROM electricity_prices
 GROUP BY day, area
 WITH NO DATA;
@@ -204,6 +215,7 @@ SELECT add_continuous_aggregate_policy('prices_daily',
 
 -- 3. CRITICAL: Prediction accuracy metrics (for model evaluation)
 -- This joins predictions with actual consumption to track model performance
+-- Using timescaledb-toolkit for cleaner error statistics
 CREATE MATERIALIZED VIEW IF NOT EXISTS prediction_accuracy_hourly
 WITH (timescaledb.continuous) AS
 SELECT
@@ -211,14 +223,15 @@ SELECT
     p.model_type,
     COUNT(*) AS prediction_count,
 
-    -- Actual vs predicted
-    AVG(c.consumption_mw) AS actual_avg_mw,
-    AVG(p.predicted_consumption_mw) AS predicted_avg_mw,
+    -- Actual vs predicted using stats_agg
+    stats_agg(c.consumption_mw) AS actual_stats,
+    stats_agg(p.predicted_consumption_mw) AS predicted_stats,
 
-    -- Error metrics
-    AVG(p.predicted_consumption_mw - c.consumption_mw) AS bias_mw,
+    -- Error metrics using stats_agg on error
+    stats_agg(p.predicted_consumption_mw - c.consumption_mw) AS error_stats,
+
+    -- Absolute error for MAE
     AVG(ABS(p.predicted_consumption_mw - c.consumption_mw)) AS mae_mw,
-    SQRT(AVG(POWER(p.predicted_consumption_mw - c.consumption_mw, 2))) AS rmse_mw,
 
     -- Relative error (percentage)
     AVG(ABS(p.predicted_consumption_mw - c.consumption_mw) / NULLIF(c.consumption_mw, 0) * 100) AS mape_percent,
@@ -230,8 +243,8 @@ SELECT
         ELSE 0.0
     END) * 100 AS coverage_percent,
 
-    -- Confidence interval width
-    AVG(p.confidence_upper - p.confidence_lower) AS avg_interval_width_mw
+    -- Confidence interval width using stats_agg
+    stats_agg(p.confidence_upper - p.confidence_lower) AS interval_width_stats
 
 FROM predictions p
 -- Join with actual consumption (use hourly bucket to match prediction timestamps)
@@ -251,20 +264,21 @@ SELECT add_continuous_aggregate_policy('prediction_accuracy_hourly',
 );
 
 -- 4. Daily prediction accuracy rollup (for trend analysis)
+-- Rolls up hourly stats_agg into daily aggregates
 CREATE MATERIALIZED VIEW IF NOT EXISTS prediction_accuracy_daily
 WITH (timescaledb.continuous) AS
 SELECT
     time_bucket('1 day', hour) AS day,
     model_type,
     SUM(prediction_count) AS total_predictions,
-    AVG(actual_avg_mw) AS avg_actual_mw,
-    AVG(predicted_avg_mw) AS avg_predicted_mw,
-    AVG(bias_mw) AS avg_bias_mw,
+    -- Combine stats_agg across hours using rollup()
+    rollup(actual_stats) AS daily_actual_stats,
+    rollup(predicted_stats) AS daily_predicted_stats,
+    rollup(error_stats) AS daily_error_stats,
     AVG(mae_mw) AS avg_mae_mw,
-    AVG(rmse_mw) AS avg_rmse_mw,
     AVG(mape_percent) AS avg_mape_percent,
     AVG(coverage_percent) AS avg_coverage_percent,
-    AVG(avg_interval_width_mw) AS avg_interval_width_mw
+    rollup(interval_width_stats) AS daily_interval_width_stats
 FROM prediction_accuracy_hourly
 GROUP BY day, model_type
 WITH NO DATA;
@@ -277,13 +291,15 @@ SELECT add_continuous_aggregate_policy('prediction_accuracy_daily',
 );
 
 -- 5. Model comparison view (latest 24h performance)
+-- Using timescaledb-toolkit for efficient error statistics
 CREATE MATERIALIZED VIEW IF NOT EXISTS model_comparison_24h
 WITH (timescaledb.continuous) AS
 SELECT
     p.model_type,
     COUNT(*) AS prediction_count,
-    AVG(ABS(p.predicted_consumption_mw - c.consumption_mw)) AS mae_mw,
-    SQRT(AVG(POWER(p.predicted_consumption_mw - c.consumption_mw, 2))) AS rmse_mw,
+    -- Error statistics using stats_agg
+    stats_agg(ABS(p.predicted_consumption_mw - c.consumption_mw)) AS absolute_error_stats,
+    stats_agg(POWER(p.predicted_consumption_mw - c.consumption_mw, 2)) AS squared_error_stats,
     AVG(CASE
         WHEN c.consumption_mw BETWEEN p.confidence_lower AND p.confidence_upper
         THEN 1.0
@@ -382,13 +398,164 @@ GRANT SELECT, INSERT, UPDATE ON weather_observations TO api;
 GRANT SELECT, INSERT, UPDATE ON predictions TO api;
 
 -- =============================================================================
+-- HELPER VIEWS FOR QUERYING STATS_AGG RESULTS
+-- =============================================================================
+
+-- View to extract consumption statistics from stats_agg
+CREATE OR REPLACE VIEW consumption_hourly_stats AS
+SELECT
+    hour,
+    average(consumption_stats) AS avg_consumption_mw,
+    max(consumption_stats) AS max_consumption_mw,
+    min(consumption_stats) AS min_consumption_mw,
+    stddev(consumption_stats) AS std_consumption_mw,
+    variance(consumption_stats) AS var_consumption_mw,
+    avg_production_mw,
+    avg_wind_mw,
+    avg_nuclear_mw,
+    sample_count
+FROM consumption_hourly;
+
+-- View to extract price statistics from stats_agg and uddsketch
+CREATE OR REPLACE VIEW prices_daily_stats AS
+SELECT
+    day,
+    area,
+    average(price_stats) AS avg_price,
+    max(price_stats) AS max_price,
+    min(price_stats) AS min_price,
+    stddev(price_stats) AS price_volatility,
+    approx_percentile(0.5, price_distribution) AS median_price,
+    approx_percentile(0.95, price_distribution) AS p95_price,
+    approx_percentile(0.05, price_distribution) AS p05_price
+FROM prices_daily;
+
+-- View to extract prediction accuracy statistics
+CREATE OR REPLACE VIEW prediction_accuracy_hourly_stats AS
+SELECT
+    hour,
+    model_type,
+    prediction_count,
+    -- Actual consumption stats
+    average(actual_stats) AS actual_avg_mw,
+    stddev(actual_stats) AS actual_std_mw,
+    -- Predicted consumption stats
+    average(predicted_stats) AS predicted_avg_mw,
+    stddev(predicted_stats) AS predicted_std_mw,
+    -- Error stats (bias is average of error)
+    average(error_stats) AS bias_mw,
+    stddev(error_stats) AS error_std_mw,
+    SQRT(variance(error_stats)) AS rmse_mw,
+    mae_mw,
+    mape_percent,
+    coverage_percent,
+    average(interval_width_stats) AS avg_interval_width_mw
+FROM prediction_accuracy_hourly;
+
+-- View to extract daily prediction accuracy statistics
+CREATE OR REPLACE VIEW prediction_accuracy_daily_stats AS
+SELECT
+    day,
+    model_type,
+    total_predictions,
+    average(daily_actual_stats) AS avg_actual_mw,
+    average(daily_predicted_stats) AS avg_predicted_mw,
+    average(daily_error_stats) AS avg_bias_mw,
+    SQRT(variance(daily_error_stats)) AS avg_rmse_mw,
+    avg_mae_mw,
+    avg_mape_percent,
+    avg_coverage_percent,
+    average(daily_interval_width_stats) AS avg_interval_width_mw
+FROM prediction_accuracy_daily;
+
+-- View to extract model comparison metrics
+CREATE OR REPLACE VIEW model_comparison_24h_stats AS
+SELECT
+    model_type,
+    prediction_count,
+    average(absolute_error_stats) AS mae_mw,
+    SQRT(average(squared_error_stats)) AS rmse_mw,
+    stddev(absolute_error_stats) AS mae_std_mw,
+    coverage_percent,
+    latest_version,
+    latest_prediction_time
+FROM model_comparison_24h;
+
+-- =============================================================================
+-- PG_STAT_MONITOR HELPER VIEWS
+-- =============================================================================
+
+-- View for top slow queries
+CREATE OR REPLACE VIEW slow_queries AS
+SELECT
+    bucket,
+    userid::regrole AS user,
+    datname AS database,
+    query,
+    calls,
+    mean_exec_time,
+    max_exec_time,
+    min_exec_time,
+    stddev_exec_time,
+    total_exec_time,
+    rows_avg,
+    -- Query text (first 100 chars)
+    substring(query, 1, 100) AS query_preview
+FROM pg_stat_monitor
+WHERE mean_exec_time > 10  -- Queries taking >10ms on average
+ORDER BY mean_exec_time DESC
+LIMIT 50;
+
+-- View for query performance over time
+CREATE OR REPLACE VIEW query_performance_buckets AS
+SELECT
+    bucket_start_time,
+    COUNT(DISTINCT query) AS unique_queries,
+    SUM(calls) AS total_calls,
+    AVG(mean_exec_time) AS avg_query_time_ms,
+    MAX(max_exec_time) AS slowest_query_ms,
+    SUM(total_exec_time) AS total_db_time_ms
+FROM pg_stat_monitor
+GROUP BY bucket_start_time
+ORDER BY bucket_start_time DESC
+LIMIT 100;
+
+-- View for most frequent queries
+CREATE OR REPLACE VIEW frequent_queries AS
+SELECT
+    query,
+    calls,
+    mean_exec_time,
+    total_exec_time,
+    rows_avg,
+    substring(query, 1, 150) AS query_preview
+FROM pg_stat_monitor
+ORDER BY calls DESC
+LIMIT 30;
+
+-- =============================================================================
+-- GRANTS FOR HELPER VIEWS
+-- =============================================================================
+
+GRANT SELECT ON consumption_hourly_stats TO api;
+GRANT SELECT ON prices_daily_stats TO api;
+GRANT SELECT ON prediction_accuracy_hourly_stats TO api;
+GRANT SELECT ON prediction_accuracy_daily_stats TO api;
+GRANT SELECT ON model_comparison_24h_stats TO api;
+GRANT SELECT ON slow_queries TO api;
+GRANT SELECT ON query_performance_buckets TO api;
+GRANT SELECT ON frequent_queries TO api;
+
+-- =============================================================================
 -- DONE! Now you have:
 -- - Hypertables with automatic partitioning
 -- - 10x compression on old data
 -- - Auto-updating analytics (continuous aggregates)
--- - Prediction accuracy tracking
+-- - Prediction accuracy tracking with timescaledb-toolkit
 -- - Model comparison metrics
 -- - Fast queries via materialized views
+-- - Query performance monitoring via pg_stat_monitor
+-- - Cleaner statistics using stats_agg() and uddsketch()
 -- =============================================================================
 
 -- Check TimescaleDB setup

@@ -142,14 +142,14 @@ class FMIClient:
 
     def fetch_realtime_observations(self, hours: int = 24) -> WeatherData:
         """Fetch real-time weather observations for the last N hours."""
-        end_time = datetime.utcnow()
+        end_time = datetime.now(UTC)
         start_time = end_time - timedelta(hours=hours)
         return self.fetch_observations(start_time, end_time)
 
     def fetch_forecast(self, hours: int = 24, station_id: str | None = None) -> WeatherData:
         """Fetch weather forecast from FMI."""
         station = station_id or self.station_id
-        start_time = datetime.utcnow()
+        start_time = datetime.now(UTC)
         end_time = start_time + timedelta(hours=hours)
 
         logfire.info(f"Fetching FMI forecast for station {station} from {start_time} to {end_time}")

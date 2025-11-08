@@ -1,6 +1,6 @@
 """Dagster jobs for data ingestion, training, and prediction."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from dagster import (
@@ -49,7 +49,7 @@ async def fingrid_consumption_data(context: AssetExecutionContext) -> Path:
     df = TemporalJoiner.merge_fingrid_datasets(all_data)
 
     # Save to parquet (for backup/historical)
-    output_path = DATA_DIR / "raw" / f"fingrid_electricity_{datetime.utcnow().date()}.parquet"
+    output_path = DATA_DIR / "raw" / f"fingrid_electricity_{datetime.now(UTC).date()}.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(output_path)
 
@@ -86,7 +86,7 @@ def fmi_weather_data(context: AssetExecutionContext) -> Path:
     df = df.with_columns(pl.lit(client.station_id).alias("station_id"))
 
     # Save to parquet (for backup/historical)
-    output_path = DATA_DIR / "raw" / f"fmi_weather_{datetime.utcnow().date()}.parquet"
+    output_path = DATA_DIR / "raw" / f"fmi_weather_{datetime.now(UTC).date()}.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(output_path)
 
@@ -109,7 +109,7 @@ def processed_training_data(context: AssetExecutionContext) -> Path:
 
     # Query last 30 days from PostgreSQL (uses LATERAL JOIN for temporal alignment)
     db = PostgresClient()
-    end_time = datetime.utcnow()
+    end_time = datetime.now(UTC)
     start_time = end_time - timedelta(days=30)
 
     # Debug: Check what's in the database
@@ -131,7 +131,7 @@ def processed_training_data(context: AssetExecutionContext) -> Path:
     db.close()
 
     # Save processed data
-    output_path = DATA_DIR / "processed" / f"training_data_{datetime.utcnow().date()}.parquet"
+    output_path = DATA_DIR / "processed" / f"training_data_{datetime.now(UTC).date()}.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     features_df.write_parquet(output_path)
@@ -183,7 +183,7 @@ def trained_prophet_model(context: AssetExecutionContext) -> Path:
 
     # Query raw data from PostgreSQL for Prophet (needs timestamp + target)
     db = PostgresClient()
-    end_time = datetime.utcnow()
+    end_time = datetime.now(UTC)
     start_time = end_time - timedelta(days=30)
 
     # Get joined data for Prophet
@@ -352,7 +352,7 @@ def bootstrap_sensor(context: SensorEvaluationContext):
         if not status["available"]:
             context.log.warning("No predictions found - triggering bootstrap job")
             yield RunRequest(
-                run_key=f"bootstrap_{datetime.utcnow().isoformat()}",
+                run_key=f"bootstrap_{datetime.now(UTC).isoformat()}",
                 tags={
                     "reason": "missing_predictions",
                     "auto_triggered": "true",
