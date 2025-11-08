@@ -1,6 +1,9 @@
 .PHONY: help install lint format test clean run-api run-dagster docker-build docker-run deploy setup setup-cloud check-env ensure-dirs \
 	railway-help railway-login railway-init railway-link railway-open railway-logs railway-set-fingrid railway-deploy railway-check \
-	railway-auth railway-project-setup railway-service-setup railway-secrets deploy-api deploy-etl
+	railway-auth railway-project-setup railway-service-setup railway-secrets deploy-api deploy-etl \
+	render-help render-login render-services render-deploy \
+	docker-up docker-down docker-restart docker-logs docker-ps docker-exec docker-shell docker-build-fresh \
+	db-migrate db-backup db-restore prod-up prod-down observability-up observability-down
 
 RAILWAY_PROJECT_NAME ?= ilmanhinta
 RAILWAY_SERVICE_NAME ?= app
@@ -36,11 +39,31 @@ help:
 	@echo "  make clean         Clean build artifacts"
 	@echo "  make run-api       Start FastAPI server"
 	@echo "  make run-dagster   Start Dagster UI"
-	@echo "  make docker-build  Build Docker image"
-	@echo "  make docker-run    Run Docker container"
-	@echo "  make deploy        Deploy both services to Railway"
-	@echo "  make deploy-api    Deploy only the API service"
-	@echo "  make deploy-etl    Deploy only the ETL service"
+	@echo ""
+	@echo "Docker Compose commands:"
+	@echo "  make docker-up     Start all services with Docker Compose"
+	@echo "  make docker-down   Stop all Docker Compose services"
+	@echo "  make docker-restart Restart all services"
+	@echo "  make docker-logs   Tail logs from all services"
+	@echo "  make docker-ps     Show running containers"
+	@echo "  make docker-shell  Open shell in API container"
+	@echo "  make docker-build-fresh  Rebuild images from scratch"
+	@echo "  make prod-up       Start production stack"
+	@echo "  make prod-down     Stop production stack"
+	@echo ""
+	@echo "Observability (One Command!):"
+	@echo "  make observability-up    Start with full SigNoz stack (auto-install)"
+	@echo "  make observability-down  Stop everything including SigNoz"
+	@echo ""
+	@echo "Database commands:"
+	@echo "  make db-migrate    Run database migrations"
+	@echo "  make db-backup     Backup PostgreSQL database"
+	@echo "  make db-restore    Restore database from backup"
+	@echo ""
+	@echo "Legacy deployment:"
+	@echo "  make deploy        Deploy (Render Blueprint preferred)"
+	@echo "  make deploy-api    Deploy only the API service (Railway legacy)"
+	@echo "  make deploy-etl    Deploy only the ETL service (Railway legacy)"
 	@echo "  make check-env     Validate required env vars"
 	@echo ""
 	@echo "Railway helpers:"
@@ -52,6 +75,12 @@ help:
 	@echo "  make railway-deploy        Deploy (alias of 'deploy')"
 	@echo "  make railway-logs          Tail logs"
 	@echo "  make railway-open          Open project in browser"
+	@echo ""
+	@echo "Render helpers:"
+	@echo "  make render-help           Show Render helper commands"
+	@echo "  make render-login          Render CLI login"
+	@echo "  make render-services       List services (non-interactive JSON)"
+	@echo "  make render-deploy         Trigger deploy for a service (RENDER_SERVICE_ID=...)"
 	@echo ""
 	@echo "Tip: set AUTO_INSTALL_RAILWAY=1 to auto-install the Railway CLI"
 
@@ -176,9 +205,10 @@ docker-run:
 	docker run -p 8000:8000 --env-file .env ilmanhinta:latest
 
 deploy:
-	@$(MAKE) deploy-api
-	@$(MAKE) deploy-etl
-	@echo "✅ Deployment complete"
+	@echo "ℹ️  Render is now the preferred deployment target."
+	@echo "   Use the 'render.yaml' Blueprint from the Render Dashboard to apply changes."
+	@echo "   CLI: install 'render', then 'render services --output json --confirm'."
+	@echo "✅ Nothing to do here by default."
 
 deploy-api:
 	@$(MAKE) railway-check
@@ -250,6 +280,34 @@ check-env:
 		echo "❌ .env not found. Run 'cp .env.example .env' and set FINGRID_API_KEY."; \
 		exit 1; \
 	fi
+
+# ------------------- Render helpers -------------------
+render-help:
+	@echo "Render helper commands:"
+	@echo "  make render-login          Render login via browser"
+	@echo "  make render-services       List services in JSON"
+	@echo "  make render-deploy         Deploy a service by ID (RENDER_SERVICE_ID=...)"
+	@echo "Notes:"
+	@echo "  - Initial provisioning is done via the Render Dashboard using render.yaml"
+	@echo "  - Set RENDER_API_KEY in CI to use non-interactive mode"
+
+render-login:
+	@if ! command -v render >/dev/null 2>&1; then \
+		echo "❌ Render CLI not found. Install with: brew install render"; \
+		echo "   or: curl -fsSL https://raw.githubusercontent.com/render-oss/cli/refs/heads/main/bin/install.sh | sh"; \
+		exit 1; \
+	fi
+	render login
+
+render-services:
+	@render services --output json --confirm
+
+render-deploy:
+	@if [ -z "$$RENDER_SERVICE_ID" ]; then \
+		echo "Usage: make render-deploy RENDER_SERVICE_ID=<service-id>"; \
+		exit 1; \
+	fi
+	render deploys create "$$RENDER_SERVICE_ID" --wait --output json --confirm
 	@FINGRID_VAL="$(FINGRID_KEY)"; \
 	if [ -z "$$FINGRID_VAL" ]; then \
 		echo "❌ FINGRID_API_KEY is missing in .env"; \
@@ -257,4 +315,110 @@ check-env:
 		exit 1; \
 	else \
 		echo "✅ Required env vars present"; \
+	fi
+
+# ------------------- Docker Compose commands -------------------
+docker-up:
+	@echo "🐳 Starting Docker Compose services..."
+	docker-compose up -d
+	@echo "✅ Services started. Check status with 'make docker-ps'"
+	@echo "   API: http://localhost:8000"
+	@echo "   Dagster: http://localhost:3000"
+	@echo "   Prometheus: http://localhost:9090"
+	@echo ""
+	@echo "💡 For full observability (traces, logs, metrics), install SigNoz:"
+	@echo "   See SIGNOZ_SETUP.md for instructions"
+
+docker-down:
+	@echo "🛑 Stopping Docker Compose services..."
+	docker-compose down
+	@echo "✅ Services stopped"
+
+# Full observability stack (auto-installs and starts SigNoz)
+observability-up:
+	@echo "🔍 Starting full observability stack..."
+	@if [ ! -d "../signoz" ]; then \
+		echo "📥 SigNoz not found. Installing to ../signoz..."; \
+		cd .. && git clone -b main https://github.com/SigNoz/signoz.git; \
+	fi
+	@echo "🚀 Starting SigNoz..."
+	@cd ../signoz/deploy/docker && docker compose up -d
+	@echo "⏳ Waiting for SigNoz to initialize (30s)..."
+	@sleep 30
+	@echo "🐳 Starting ilmanhinta with SigNoz integration..."
+	docker-compose -f docker-compose.yml -f docker-compose.signoz.yml up -d
+	@echo ""
+	@echo "✅ Full observability stack running:"
+	@echo "   API: http://localhost:8000"
+	@echo "   Dagster: http://localhost:3000"
+	@echo "   Prometheus: http://localhost:9090"
+	@echo "   SigNoz: http://localhost:3301"
+
+observability-down:
+	@echo "🛑 Stopping observability stack..."
+	docker-compose down
+	@if [ -d "../signoz/deploy/docker" ]; then \
+		cd ../signoz/deploy/docker && docker compose down; \
+	fi
+	@echo "✅ Everything stopped"
+
+docker-restart:
+	@echo "🔄 Restarting Docker Compose services..."
+	docker-compose restart
+	@echo "✅ Services restarted"
+
+docker-logs:
+	@echo "📋 Tailing logs from all services..."
+	docker-compose logs -f
+
+docker-ps:
+	@echo "🐳 Docker Compose service status:"
+	docker-compose ps
+
+docker-exec:
+	@echo "🐚 Opening shell in API container..."
+	docker-compose exec api bash
+
+docker-shell: docker-exec
+
+docker-build-fresh:
+	@echo "🔨 Rebuilding Docker images from scratch..."
+	docker-compose build --no-cache
+	@echo "✅ Images rebuilt"
+
+# Production stack
+prod-up:
+	@echo "🚀 Starting production stack..."
+	docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+	@echo "✅ Production stack started"
+
+prod-down:
+	@echo "🛑 Stopping production stack..."
+	docker-compose -f docker-compose.yml -f docker-compose.prod.yml down
+	@echo "✅ Production stack stopped"
+
+# Database management
+db-migrate:
+	@echo "🗄️  Running database migrations..."
+	docker-compose exec postgres psql -U api -d ilmanhinta -f /docker-entrypoint-initdb.d/init.sql
+	@echo "✅ Migrations complete"
+
+db-backup:
+	@echo "💾 Backing up database..."
+	@TIMESTAMP=$$(date +%Y%m%d_%H%M%S); \
+	docker-compose exec postgres pg_dump -U api ilmanhinta > backups/ilmanhinta_$$TIMESTAMP.sql
+	@echo "✅ Database backed up to backups/ilmanhinta_$$TIMESTAMP.sql"
+
+db-restore:
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+		echo "❌ Usage: make db-restore BACKUP_FILE=backups/ilmanhinta_20240101_120000.sql"; \
+		exit 1; \
+	fi
+	@echo "⚠️  This will overwrite the current database. Continue? [y/N]"
+	@read -r CONFIRM; \
+	if [ "$$CONFIRM" = "y" ] || [ "$$CONFIRM" = "Y" ]; then \
+		docker-compose exec -T postgres psql -U api ilmanhinta < $(BACKUP_FILE); \
+		echo "✅ Database restored from $(BACKUP_FILE)"; \
+	else \
+		echo "❌ Restore cancelled"; \
 	fi

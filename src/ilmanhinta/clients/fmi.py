@@ -6,6 +6,7 @@ from typing import cast
 from fmiopendata.wfs import download_stored_query
 
 from ilmanhinta.config import settings
+from ilmanhinta.logging import logfire
 from ilmanhinta.models.fmi import FMIObservation, WeatherData
 
 

@@ -14,6 +14,7 @@ from ilmanhinta.db.prediction_store import fetch_latest_predictions, get_predict
 from ilmanhinta.logging import logfire
 from ilmanhinta.models.fmi import PredictionOutput
 
+from .analytics import router as analytics_router
 from .metrics import (
     api_request_duration_seconds,
     api_requests_total,
@@ -26,11 +27,14 @@ from .metrics import (
 app = FastAPI(
     title="Ilmanhinta - Finnish Energy Consumption Prediction",
     description="API for predicting electricity consumption based on weather data",
-    version="0.1.0",
+    version="0.2.0",  # Bumped version for TimescaleDB migration
 )
 
 # Instrument FastAPI with Logfire for automatic tracing
 logfire.instrument_fastapi(app)
+
+# Include analytics router
+app.include_router(analytics_router)
 
 DEFAULT_MODEL_TYPE = os.getenv("PREDICTION_MODEL_TYPE", "lightgbm")
 

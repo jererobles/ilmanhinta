@@ -1,6 +1,6 @@
 # ⚡ Ilmanhinta - Finnish Weather → Energy Consumption Prediction
 
-Production-grade ETL pipeline predicting electricity consumption based on Finnish weather data. Built with modern Python tooling (DuckDB, Prophet, Logfire) and deployed to Railway.
+Production-grade ETL pipeline predicting electricity consumption based on Finnish weather data. Built with modern Python tooling (DuckDB, Prophet, Logfire) and deployed to Render.
 
 [![CI/CD](https://github.com/jererobles/ilmanhinta/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/ilmanhinta/actions)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -154,7 +154,7 @@ curl http://localhost:8000/metrics
                      │
                      ▼
               ┌──────────┐
-              │ Railway  │
+              │ Render   │
               │  (EU)    │
               └──────────┘
 ```
@@ -206,8 +206,49 @@ curl http://localhost:8000/metrics
 
 - **Logfire**: Pydantic-native observability with auto-instrumentation
 - **Prometheus**: Metrics collection (request latency, predictions)
-- **Railway**: Cloud application platform with persistent volumes
+- **Render**: Cloud application platform with Blueprints & persistent disks
 - **Docker**: Multi-stage builds for small images
+
+## 🚀 Deploying to Render
+
+This repo includes a single `render.yaml` Blueprint at the repository root that defines:
+
+- A web service for the FastAPI API (`ilmanhinta-api`)
+- A worker service for Dagster ingestion/training (`ilmanhinta-etl`) with a persistent disk
+- A Render Postgres database used to share predictions between ETL and API
+
+Steps:
+
+1) Ensure your repo is pushed to GitHub/GitLab/Bitbucket.
+
+2) In the Render Dashboard:
+   - New → Blueprint → Select this repo
+   - Review the plan and click “Apply”
+
+3) Provide secret values when prompted (at minimum):
+   - `FINGRID_API_KEY` (ETL service)
+   - `LOGFIRE_TOKEN` (optional, for observability)
+
+4) After the Blueprint is applied, Render provisions:
+   - Postgres (`ilmanhinta-db`) and injects `DATABASE_URL` into both services
+   - The API service (binds to `$PORT`, health check on `/health`)
+   - The ETL worker (starts Dagster gRPC + daemon via `scripts/start-etl.sh`)
+
+Notes:
+
+- The ETL worker mounts a persistent disk at `/var/data` and sets `DATA_DIR=/var/data` so DuckDB and model artifacts persist.
+- Predictions are stored in Postgres; the API reads from the same database.
+- You can adjust instance types/region in `render.yaml` (defaults to free tier, region `frankfurt`).
+
+CLI (optional):
+
+- Install: `brew install render` or use the install script from Render’s docs.
+- List resources: `render services --output json --confirm`
+- Trigger deploys: `render deploys create <SERVICE_ID> --wait --output json --confirm`
+
+Railway (legacy):
+
+Existing Railway files are retained under `services/` but are no longer used by default.
 
 ### Code Quality
 

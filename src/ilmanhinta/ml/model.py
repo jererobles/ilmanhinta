@@ -101,6 +101,14 @@ class ConsumptionModel:
 
         logfire.info(f"Making predictions for {len(features_df)} records")
 
+        # Ensure all required features are present
+        missing_features = set(self.feature_names) - set(features_df.columns)
+        if missing_features:
+            raise ValueError(
+                f"Missing required features for prediction: {missing_features}. "
+                f"Ensure training and inference use the same feature set."
+            )
+
         # Ensure feature order matches training
         X = features_df.select(self.feature_names).to_numpy()
 

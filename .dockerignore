@@ -1,0 +1,72 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+coverage.xml
+*.cover
+.hypothesis/
+pytest_cache/
+.pytest_cache/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+.DS_Store
+
+# Project specific
+data/
+*.duckdb
+*.duckdb.wal
+*.parquet
+logs/
+*.log
+.env
+.env.*
+!.env.example
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# Dagster local storage
+dagster_home/
+
+# Testing
+tests/
+test_*.py
+*_test.py
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/

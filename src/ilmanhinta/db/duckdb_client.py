@@ -6,20 +6,28 @@ DuckDB acts as both storage engine and compute layer - the Roided Cousin of SQLi
 
 from __future__ import annotations
 
+import os
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
 
 import duckdb
 import polars as pl
 
 
 def get_db_path() -> Path:
-    """Get the DuckDB database file path."""
-    data_dir = Path("/app/data")
-    if not data_dir.exists():
-        data_dir = Path.cwd() / "data"
+    """Get the DuckDB database file path.
+
+    Respects DATA_DIR if set; otherwise prefers /app/data, then falls back to CWD/data.
+    """
+    env_dir = os.getenv("DATA_DIR")
+    if env_dir:
+        data_dir = Path(env_dir)
+    else:
+        data_dir = Path("/app/data")
+        if not data_dir.exists():
+            data_dir = Path.cwd() / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir / "ilmanhinta.duckdb"
 
@@ -79,7 +87,8 @@ class DuckDBClient:
         """Initialize database schema if not exists."""
         with self.transaction():
             # Consumption table: Fingrid electricity data
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS consumption (
                     timestamp TIMESTAMP NOT NULL,
                     consumption_mw DOUBLE NOT NULL,
@@ -90,10 +99,12 @@ class DuckDBClient:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (timestamp)
                 )
-            """)
+            """
+            )
 
             # Weather table: FMI observations and forecasts
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS weather (
                     timestamp TIMESTAMP NOT NULL,
                     temperature DOUBLE,
@@ -108,10 +119,12 @@ class DuckDBClient:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (timestamp, station_id, data_type)
                 )
-            """)
+            """
+            )
 
             # Predictions table: Model forecasts with confidence intervals
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS predictions (
                     timestamp TIMESTAMP NOT NULL,
                     predicted_consumption_mw DOUBLE NOT NULL,
@@ -122,15 +135,14 @@ class DuckDBClient:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (timestamp, model_type, created_at)
                 )
-            """)
+            """
+            )
 
             # Create indexes for time-series queries
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_consumption_ts ON consumption(timestamp)"
             )
-            self.conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_weather_ts ON weather(timestamp)"
-            )
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_weather_ts ON weather(timestamp)")
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_predictions_ts ON predictions(timestamp)"
             )
@@ -145,7 +157,8 @@ class DuckDBClient:
             Number of rows inserted
         """
         with self.transaction():
-            result = self.conn.execute(f"""
+            result = self.conn.execute(
+                f"""
                 INSERT INTO consumption (timestamp, consumption_mw, production_mw, wind_mw, nuclear_mw)
                 SELECT
                     timestamp,
@@ -160,10 +173,13 @@ class DuckDBClient:
                     wind_mw = EXCLUDED.wind_mw,
                     nuclear_mw = EXCLUDED.nuclear_mw,
                     created_at = CURRENT_TIMESTAMP
-            """)
+            """
+            )
             return result.fetchone()[0] if result else 0
 
-    def ingest_weather_parquet(self, parquet_path: Path | str, data_type: str = "observation") -> int:
+    def ingest_weather_parquet(
+        self, parquet_path: Path | str, data_type: str = "observation"
+    ) -> int:
         """Ingest weather data from Parquet file.
 
         Args:
@@ -174,7 +190,8 @@ class DuckDBClient:
             Number of rows inserted
         """
         with self.transaction():
-            result = self.conn.execute(f"""
+            result = self.conn.execute(
+                f"""
                 INSERT INTO weather (
                     timestamp, temperature, humidity, wind_speed, wind_direction,
                     pressure, precipitation, cloud_cover, station_id, data_type
@@ -200,7 +217,8 @@ class DuckDBClient:
                     precipitation = EXCLUDED.precipitation,
                     cloud_cover = EXCLUDED.cloud_cover,
                     created_at = CURRENT_TIMESTAMP
-            """)
+            """
+            )
             return result.fetchone()[0] if result else 0
 
     def insert_consumption(self, df: pl.DataFrame) -> int:
@@ -215,16 +233,30 @@ class DuckDBClient:
         with self.transaction():
             # Convert Polars to Arrow for zero-copy transfer
             arrow_table = df.to_arrow()
-            result = self.conn.execute("""
-                INSERT INTO consumption (timestamp, consumption_mw, production_mw, wind_mw, nuclear_mw)
-                SELECT * FROM arrow_table
+
+            # Build column list dynamically based on what's in the DataFrame
+            available_cols = [
+                col
+                for col in df.columns
+                if col in ["timestamp", "consumption_mw", "production_mw", "wind_mw", "nuclear_mw"]
+            ]
+            data_cols = [col for col in available_cols if col != "timestamp"]
+
+            if not data_cols:
+                raise ValueError("DataFrame must contain at least one data column")
+
+            # Build UPDATE clause for available columns
+            update_clauses = [f"{col} = EXCLUDED.{col}" for col in data_cols]
+            update_clauses.append("created_at = NOW()")
+
+            query = f"""
+                INSERT INTO consumption ({', '.join(available_cols)})
+                SELECT {', '.join(available_cols)} FROM arrow_table
                 ON CONFLICT (timestamp) DO UPDATE SET
-                    consumption_mw = EXCLUDED.consumption_mw,
-                    production_mw = EXCLUDED.production_mw,
-                    wind_mw = EXCLUDED.wind_mw,
-                    nuclear_mw = EXCLUDED.nuclear_mw,
-                    created_at = CURRENT_TIMESTAMP
-            """)
+                    {', '.join(update_clauses)}
+            """
+
+            result = self.conn.execute(query)
             return result.fetchone()[0] if result else 0
 
     def insert_weather(self, df: pl.DataFrame, data_type: str = "observation") -> int:
@@ -243,22 +275,40 @@ class DuckDBClient:
 
         with self.transaction():
             arrow_table = df.to_arrow()
-            result = self.conn.execute("""
-                INSERT INTO weather (
-                    timestamp, temperature, humidity, wind_speed, wind_direction,
-                    pressure, precipitation, cloud_cover, station_id, data_type
-                )
-                SELECT * FROM arrow_table
+
+            # Build column list dynamically based on what's in the DataFrame
+            expected_cols = [
+                "timestamp",
+                "temperature",
+                "humidity",
+                "wind_speed",
+                "wind_direction",
+                "pressure",
+                "precipitation",
+                "cloud_cover",
+                "station_id",
+                "data_type",
+            ]
+            available_cols = [col for col in df.columns if col in expected_cols]
+            data_cols = [
+                col for col in available_cols if col not in ["timestamp", "station_id", "data_type"]
+            ]
+
+            if not data_cols:
+                raise ValueError("DataFrame must contain at least one data column")
+
+            # Build UPDATE clause for available columns
+            update_clauses = [f"{col} = EXCLUDED.{col}" for col in data_cols]
+            update_clauses.append("created_at = NOW()")
+
+            query = f"""
+                INSERT INTO weather ({', '.join(available_cols)})
+                SELECT {', '.join(available_cols)} FROM arrow_table
                 ON CONFLICT (timestamp, station_id, data_type) DO UPDATE SET
-                    temperature = EXCLUDED.temperature,
-                    humidity = EXCLUDED.humidity,
-                    wind_speed = EXCLUDED.wind_speed,
-                    wind_direction = EXCLUDED.wind_direction,
-                    pressure = EXCLUDED.pressure,
-                    precipitation = EXCLUDED.precipitation,
-                    cloud_cover = EXCLUDED.cloud_cover,
-                    created_at = CURRENT_TIMESTAMP
-            """)
+                    {', '.join(update_clauses)}
+            """
+
+            result = self.conn.execute(query)
             return result.fetchone()[0] if result else 0
 
     def insert_predictions(
@@ -285,13 +335,15 @@ class DuckDBClient:
 
         with self.transaction():
             arrow_table = df.to_arrow()
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 INSERT INTO predictions (
                     timestamp, predicted_consumption_mw, confidence_lower,
                     confidence_upper, model_type, model_version
                 )
                 SELECT * FROM arrow_table
-            """)
+            """
+            )
             return len(df)
 
     def get_consumption(
@@ -309,12 +361,15 @@ class DuckDBClient:
             Polars DataFrame with consumption data
         """
         end_time = end_time or datetime.now()
-        result = self.conn.execute("""
+        result = self.conn.execute(
+            """
             SELECT timestamp, consumption_mw, production_mw, wind_mw, nuclear_mw
             FROM consumption
             WHERE timestamp >= ? AND timestamp <= ?
             ORDER BY timestamp
-        """, [start_time, end_time])
+        """,
+            [start_time, end_time],
+        )
 
         return pl.from_arrow(result.fetch_arrow_table())
 
@@ -337,21 +392,27 @@ class DuckDBClient:
         end_time = end_time or datetime.now()
 
         if data_type:
-            result = self.conn.execute("""
+            result = self.conn.execute(
+                """
                 SELECT timestamp, temperature, humidity, wind_speed, wind_direction,
                        pressure, precipitation, cloud_cover, station_id, data_type
                 FROM weather
                 WHERE timestamp >= ? AND timestamp <= ? AND data_type = ?
                 ORDER BY timestamp
-            """, [start_time, end_time, data_type])
+            """,
+                [start_time, end_time, data_type],
+            )
         else:
-            result = self.conn.execute("""
+            result = self.conn.execute(
+                """
                 SELECT timestamp, temperature, humidity, wind_speed, wind_direction,
                        pressure, precipitation, cloud_cover, station_id, data_type
                 FROM weather
                 WHERE timestamp >= ? AND timestamp <= ?
                 ORDER BY timestamp
-            """, [start_time, end_time])
+            """,
+                [start_time, end_time],
+            )
 
         return pl.from_arrow(result.fetch_arrow_table())
 
@@ -370,22 +431,28 @@ class DuckDBClient:
             Polars DataFrame with predictions
         """
         if model_type:
-            result = self.conn.execute("""
+            result = self.conn.execute(
+                """
                 SELECT timestamp, predicted_consumption_mw, confidence_lower,
                        confidence_upper, model_type, model_version, created_at
                 FROM predictions
                 WHERE model_type = ?
                 ORDER BY timestamp DESC
                 LIMIT ?
-            """, [model_type, limit])
+            """,
+                [model_type, limit],
+            )
         else:
-            result = self.conn.execute("""
+            result = self.conn.execute(
+                """
                 SELECT timestamp, predicted_consumption_mw, confidence_lower,
                        confidence_upper, model_type, model_version, created_at
                 FROM predictions
                 ORDER BY timestamp DESC
                 LIMIT ?
-            """, [limit])
+            """,
+                [limit],
+            )
 
         return pl.from_arrow(result.fetch_arrow_table())
 
@@ -406,7 +473,8 @@ class DuckDBClient:
         Returns:
             Polars DataFrame with joined data
         """
-        result = self.conn.execute("""
+        result = self.conn.execute(
+            """
             SELECT
                 c.timestamp,
                 c.consumption_mw,
@@ -430,7 +498,9 @@ class DuckDBClient:
             ) w ON true
             WHERE c.timestamp >= ? AND c.timestamp <= ?
             ORDER BY c.timestamp
-        """, [start_time, end_time])
+        """,
+            [start_time, end_time],
+        )
 
         return pl.from_arrow(result.fetch_arrow_table())
 
