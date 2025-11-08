@@ -5,7 +5,7 @@ This is Facebook Infrastructure that's either Overengineered or Abandoned (both)
 """
 
 import pickle
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import polars as pl
@@ -121,7 +121,7 @@ class ProphetConsumptionModel:
         # Train model
         self.model.fit(prophet_df)
 
-        self.trained_at = datetime.utcnow()
+        self.trained_at = datetime.now(UTC)
         self.model_version = self.trained_at.strftime("%Y%m%d_%H%M%S")
 
         # Calculate in-sample metrics

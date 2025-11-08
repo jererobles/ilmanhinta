@@ -68,6 +68,7 @@ async def get_daily_accuracy(
     """Get daily prediction accuracy metrics from continuous aggregates.
 
     This endpoint returns pre-computed accuracy metrics updated daily.
+    Uses timescaledb-toolkit's stats_agg() for efficient statistics extraction.
     No expensive computation at query time!
 
     Args:
@@ -96,7 +97,7 @@ async def get_daily_accuracy(
             avg_mape_percent,
             avg_coverage_percent,
             avg_interval_width_mw
-        FROM prediction_accuracy_daily
+        FROM prediction_accuracy_daily_stats
         WHERE day > NOW() - INTERVAL '%s days'
         {where_clause}
         ORDER BY day DESC, model_type
@@ -132,7 +133,8 @@ async def compare_models() -> list[ModelComparison]:
     """Compare all models over the last 24 hours.
 
     Uses the pre-computed model_comparison_24h continuous aggregate
-    for instant response time.
+    with timescaledb-toolkit's stats_agg() for efficient error metrics.
+    Instant response time!
 
     Returns:
         List of model performance metrics ordered by MAE (best first)
@@ -146,7 +148,7 @@ async def compare_models() -> list[ModelComparison]:
             coverage_percent,
             latest_version,
             latest_prediction_time
-        FROM model_comparison_24h
+        FROM model_comparison_24h_stats
         ORDER BY mae_mw ASC
     """
 
@@ -185,7 +187,8 @@ async def get_hourly_consumption(
     """Get hourly consumption statistics from continuous aggregates.
 
     Returns pre-computed hourly statistics including consumption, production,
-    wind, and nuclear power generation.
+    wind, and nuclear power generation. Uses timescaledb-toolkit's stats_agg()
+    to efficiently compute avg/max/min/stddev from a single aggregate.
 
     Args:
         hours: Number of hours to retrieve (1-168 = 1 week)
@@ -204,7 +207,7 @@ async def get_hourly_consumption(
             avg_wind_mw,
             avg_nuclear_mw,
             sample_count
-        FROM consumption_hourly
+        FROM consumption_hourly_stats
         WHERE hour > NOW() - INTERVAL '%s hours'
         ORDER BY hour DESC
     """
@@ -245,7 +248,7 @@ async def get_analytics_summary() -> dict[str, Any]:
             cur.execute(
                 """
                 SELECT model_type, mae_mw, prediction_count
-                FROM model_comparison_24h
+                FROM model_comparison_24h_stats
                 ORDER BY mae_mw ASC
                 LIMIT 1
             """

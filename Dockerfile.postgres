@@ -1,0 +1,31 @@
+# Custom PostgreSQL image with TimescaleDB, timescaledb-toolkit, and pg_stat_monitor
+FROM timescale/timescaledb:latest-pg15
+
+# Install build dependencies
+USER root
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    git \
+    postgresql-server-dev-15 \
+    libssl-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install pg_stat_monitor from source
+WORKDIR /tmp
+RUN git clone --depth 1 --branch 2.0.4 https://github.com/percona/pg_stat_monitor.git && \
+    cd pg_stat_monitor && \
+    make USE_PGXS=1 && \
+    make USE_PGXS=1 install && \
+    cd .. && \
+    rm -rf pg_stat_monitor
+
+# timescaledb-toolkit is already included in timescale/timescaledb:latest-pg15
+# No additional installation needed for toolkit
+
+# Switch back to postgres user
+USER postgres
+
+# Set shared_preload_libraries to include both TimescaleDB and pg_stat_monitor
+# This will be overridden by docker-compose command, but set as default
+RUN echo "shared_preload_libraries = 'timescaledb,pg_stat_monitor'" >> /usr/share/postgresql/postgresql.conf.sample

@@ -1,8 +1,24 @@
 services:
   postgres:
-    image: timescale/timescaledb:latest-pg15
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
     env_file:
       - .env
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=timescaledb,pg_stat_monitor
+      - -c
+      - pg_stat_monitor.pgsm_query_max_len=2048
+      - -c
+      - pg_stat_monitor.pgsm_enable=1
+      - -c
+      - pg_stat_monitor.pgsm_track=all
+      - -c
+      - pg_stat_monitor.pgsm_normalized_query=1
+      - -c
+      - pg_stat_monitor.pgsm_bucket_time=300
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init_timescaledb_enhanced.sql:/docker-entrypoint-initdb.d/01_init.sql

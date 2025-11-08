@@ -1,7 +1,7 @@
 """LightGBM model for electricity consumption prediction."""
 
 import pickle
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -75,7 +75,7 @@ class ConsumptionModel:
             ],
         )
 
-        self.trained_at = datetime.utcnow()
+        self.trained_at = datetime.now(UTC)
         self.model_version = self.trained_at.strftime("%Y%m%d_%H%M%S")
 
         # Calculate metrics

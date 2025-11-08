@@ -43,10 +43,10 @@ class TemporalJoiner:
 
         Args:
             datasets: Dict mapping column names to Fingrid data points.
-                     Expected keys: 'consumption', 'production', 'wind', 'nuclear'
+                     Expected keys: 'consumption', 'production', 'wind', 'nuclear', 'net_import'
 
         Returns:
-            Polars DataFrame with columns: timestamp, consumption_mw, production_mw, wind_mw, nuclear_mw
+            Polars DataFrame with columns: timestamp, consumption_mw, production_mw, wind_mw, nuclear_mw, net_import_mw
         """
         if not datasets:
             return pl.DataFrame()
@@ -57,6 +57,7 @@ class TemporalJoiner:
             "production": "production_mw",
             "wind": "wind_mw",
             "nuclear": "nuclear_mw",
+            "net_import": "net_import_mw",
         }
 
         dfs = []
@@ -110,12 +111,12 @@ class TemporalJoiner:
         records = [
             {
                 "timestamp": obs.timestamp,
-                "temperature": obs.temperature,
-                "humidity": obs.humidity,
-                "wind_speed": obs.wind_speed,
+                "temperature_c": obs.temperature,
+                "humidity_percent": obs.humidity,
+                "wind_speed_ms": obs.wind_speed,
                 "wind_direction": obs.wind_direction,
-                "pressure": obs.pressure,
-                "precipitation": obs.precipitation,
+                "pressure_hpa": obs.pressure,
+                "precipitation_mm": obs.precipitation,
                 "cloud_cover": obs.cloud_cover,
             }
             for obs in observations
