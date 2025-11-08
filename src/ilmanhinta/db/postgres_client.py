@@ -13,10 +13,7 @@ from datetime import UTC, datetime
 
 import pandas as pd
 import polars as pl
-from sqlalchemy import (
-    create_engine,
-    text,
-)
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -100,7 +97,7 @@ class PostgresClient:
                 Optional: production_mw, net_import_mw
 
         Returns:
-            Number of rows inserted
+            Number of rows inserted/updated
         """
         # Convert Polars to pandas for SQLAlchemy
         pdf = df.to_pandas()
@@ -114,15 +111,39 @@ class PostgresClient:
         }
         pdf = pdf.rename(columns=column_mapping)
 
+        # Use batch upsert with ON CONFLICT
         with self.session() as session:
-            # Use PostgreSQL's ON CONFLICT for upsert
-            rows_affected = pdf.to_sql(
-                "electricity_consumption",
-                con=self.engine,
-                if_exists="append",
-                index=False,
-                method="multi",
-            )
+            # Prepare values for bulk insert
+            values_list = []
+            for _, row in pdf.iterrows():
+                values_list.append(
+                    {
+                        "time": row.get("time"),
+                        "consumption_mw": row.get("consumption_mw"),
+                        "production_mw": row.get("production_mw"),
+                        "wind_mw": row.get("wind_mw"),
+                        "nuclear_mw": row.get("nuclear_mw"),
+                        "net_import_mw": row.get("net_import_mw"),
+                    }
+                )
+
+            # Use raw SQL for efficient batch upsert
+            if values_list:
+                upsert_sql = text(
+                    """
+                    INSERT INTO electricity_consumption (time, consumption_mw, production_mw, wind_mw, nuclear_mw, net_import_mw)
+                    VALUES (:time, :consumption_mw, :production_mw, :wind_mw, :nuclear_mw, :net_import_mw)
+                    ON CONFLICT (time) DO UPDATE SET
+                        consumption_mw = EXCLUDED.consumption_mw,
+                        production_mw = EXCLUDED.production_mw,
+                        wind_mw = EXCLUDED.wind_mw,
+                        nuclear_mw = EXCLUDED.nuclear_mw,
+                        net_import_mw = EXCLUDED.net_import_mw
+                """
+                )
+                session.execute(upsert_sql, values_list)
+                session.commit()
+
             return len(pdf)
 
     def insert_prices(
@@ -164,24 +185,69 @@ class PostgresClient:
 
         Args:
             df: Polars DataFrame with weather data
-                Required columns: time, temperature_c
+                Required columns: timestamp or time, temperature_c
                 Optional: wind_speed_ms, cloud_cover, humidity_percent, pressure_hpa
             station_id: Weather station identifier
 
         Returns:
-            Number of rows inserted
+            Number of rows inserted/updated
         """
         pdf = df.to_pandas()
+
+        # Rename timestamp column to time if needed (database uses 'time')
+        if "timestamp" in pdf.columns and "time" not in pdf.columns:
+            pdf = pdf.rename(columns={"timestamp": "time"})
+
         pdf["station_id"] = station_id
 
+        # Use batch upsert with ON CONFLICT
         with self.session() as session:
-            rows_affected = pdf.to_sql(
-                "weather_observations",
-                con=self.engine,
-                if_exists="append",
-                index=False,
-                method="multi",
-            )
+            # Prepare values for bulk insert
+            values_list = []
+            for _, row in pdf.iterrows():
+                # Convert cloud_cover to int, handling NaN
+                cloud_cover = row.get("cloud_cover")
+                if pd.isna(cloud_cover):
+                    cloud_cover = None
+                elif isinstance(cloud_cover, (int, float)):
+                    cloud_cover = int(cloud_cover) if not pd.isna(cloud_cover) else None
+
+                values_list.append(
+                    {
+                        "time": row.get("time"),
+                        "station_id": row.get("station_id"),
+                        "temperature_c": row.get("temperature_c"),
+                        "humidity_percent": row.get("humidity_percent"),
+                        "wind_speed_ms": row.get("wind_speed_ms"),
+                        "wind_direction": row.get("wind_direction"),
+                        "pressure_hpa": row.get("pressure_hpa"),
+                        "precipitation_mm": row.get("precipitation_mm"),
+                        "cloud_cover": cloud_cover,
+                    }
+                )
+
+            # Use raw SQL for efficient batch upsert
+            if values_list:
+                upsert_sql = text(
+                    """
+                    INSERT INTO weather_observations
+                    (time, station_id, temperature_c, humidity_percent, wind_speed_ms,
+                     wind_direction, pressure_hpa, precipitation_mm, cloud_cover)
+                    VALUES (:time, :station_id, :temperature_c, :humidity_percent, :wind_speed_ms,
+                            :wind_direction, :pressure_hpa, :precipitation_mm, :cloud_cover)
+                    ON CONFLICT (time, station_id, data_type) DO UPDATE SET
+                        temperature_c = EXCLUDED.temperature_c,
+                        humidity_percent = EXCLUDED.humidity_percent,
+                        wind_speed_ms = EXCLUDED.wind_speed_ms,
+                        wind_direction = EXCLUDED.wind_direction,
+                        pressure_hpa = EXCLUDED.pressure_hpa,
+                        precipitation_mm = EXCLUDED.precipitation_mm,
+                        cloud_cover = EXCLUDED.cloud_cover
+                """
+                )
+                session.execute(upsert_sql, values_list)
+                session.commit()
+
             return len(pdf)
 
     def insert_weather_forecast(
@@ -672,13 +738,21 @@ class PostgresClient:
     def refresh_materialized_views(self) -> None:
         """Refresh all materialized views for better query performance."""
         with self.session() as session:
-            # Refresh comparison view
-            session.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY prediction_comparison"))
+            # Refresh prediction accuracy views (non-continuous due to multi-hypertable joins)
+            session.execute(
+                text("REFRESH MATERIALIZED VIEW CONCURRENTLY prediction_accuracy_hourly")
+            )
+            session.execute(
+                text("REFRESH MATERIALIZED VIEW CONCURRENTLY prediction_accuracy_daily")
+            )
+            session.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY model_comparison_24h"))
 
             # Legacy views (if they exist)
             try:
-                session.execute(text("REFRESH MATERIALIZED VIEW hourly_consumption_stats"))
-                session.execute(text("REFRESH MATERIALIZED VIEW daily_price_stats"))
+                session.execute(
+                    text("REFRESH MATERIALIZED VIEW CONCURRENTLY hourly_consumption_stats")
+                )
+                session.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY daily_price_stats"))
             except Exception:
                 pass  # Views might not exist yet
 
@@ -716,31 +790,3 @@ class PostgresClient:
                 "predictions_rows": predictions_count,
                 "db_size_bytes": db_size,
             }
-
-    def connect_duckdb(self) -> None:
-        """Allow DuckDB to connect to this PostgreSQL instance for analytical queries.
-
-        This enables hybrid OLTP/OLAP workflows where PostgreSQL handles
-        transactional workloads and DuckDB handles analytical queries.
-        """
-        import duckdb
-
-        conn = duckdb.connect()
-        conn.install_extension("postgres_scanner")
-        conn.load_extension("postgres_scanner")
-
-        # Parse connection string
-        db_parts = self.database_url.replace("postgresql://", "").split("@")
-        user_pass = db_parts[0].split(":")
-        host_db = db_parts[1].split("/")
-        host_port = host_db[0].split(":")
-
-        # Attach PostgreSQL database
-        conn.execute(
-            f"""
-            ATTACH 'dbname={host_db[1]} host={host_port[0]} port={host_port[1] if len(host_port) > 1 else '5432'}
-                   user={user_pass[0]} password={user_pass[1]}' AS postgres_db (TYPE postgres)
-        """
-        )
-
-        return conn

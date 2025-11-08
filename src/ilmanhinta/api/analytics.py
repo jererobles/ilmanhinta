@@ -4,7 +4,7 @@ These endpoints provide real-time model performance metrics and insights
 without expensive computation - all data is pre-computed and auto-refreshed.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import psycopg
@@ -98,7 +98,7 @@ async def get_daily_accuracy(
             avg_coverage_percent,
             avg_interval_width_mw
         FROM prediction_accuracy_daily_stats
-        WHERE day > NOW() - INTERVAL '%s days'
+        WHERE day > NOW() - make_interval(days => %s)
         {where_clause}
         ORDER BY day DESC, model_type
     """
@@ -208,7 +208,7 @@ async def get_hourly_consumption(
             avg_nuclear_mw,
             sample_count
         FROM consumption_hourly_stats
-        WHERE hour > NOW() - INTERVAL '%s hours'
+        WHERE hour > NOW() - make_interval(hours => %s)
         ORDER BY hour DESC
     """
 
@@ -287,7 +287,7 @@ async def get_analytics_summary() -> dict[str, Any]:
             },
             "latest_prediction_time": latest_prediction,
             "data_freshness_hours": (
-                (datetime.utcnow() - latest_prediction).total_seconds() / 3600
+                (datetime.now(UTC) - latest_prediction).total_seconds() / 3600
                 if latest_prediction
                 else None
             ),

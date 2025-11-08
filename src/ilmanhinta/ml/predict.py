@@ -43,13 +43,27 @@ class Predictor:
             logfire.error("No weather forecast available")
             return []
 
+        # Rename weather columns to match model training features
+        # Note: Keep precipitation_mm as is since the model was trained with that name
+        weather_column_mapping = {
+            "temperature_c": "temperature",
+            "humidity_percent": "humidity",
+            "wind_speed_ms": "wind_speed",
+            "pressure_hpa": "pressure",
+            # precipitation_mm stays as precipitation_mm (model expects this name)
+        }
+        # Only rename columns that exist
+        rename_dict = {k: v for k, v in weather_column_mapping.items() if k in forecast_df.columns}
+        if rename_dict:
+            forecast_df = forecast_df.rename(rename_dict)
+
         # 3. Align to hourly resolution
         consumption_df = TemporalJoiner.align_to_hourly(consumption_df)
         forecast_df = TemporalJoiner.align_to_hourly(forecast_df)
 
         # Ensure both DataFrames share the same schema before vertical concatenation.
-        # consumption_df now has: [timestamp, consumption_mw, production_mw, wind_mw, nuclear_mw]
-        # forecast_df has weather columns: [temperature, humidity, wind_speed, wind_direction, pressure, precipitation, cloud_cover]
+        # consumption_df now has: [timestamp, consumption_mw, production_mw, wind_mw, nuclear_mw, net_import_mw]
+        # forecast_df has weather columns: [temperature, humidity, wind_speed, wind_direction, pressure, precipitation_mm, cloud_cover]
         # Add missing weather columns to consumption_df as nulls so we can vstack later.
         weather_cols = [
             "temperature",
@@ -57,7 +71,7 @@ class Predictor:
             "wind_speed",
             "wind_direction",
             "pressure",
-            "precipitation",
+            "precipitation_mm",
             "cloud_cover",
         ]
 
@@ -90,13 +104,18 @@ class Predictor:
             if "nuclear_mw" in consumption_df.columns
             else None
         )
+        latest_net_import = (
+            consumption_df.select("net_import_mw").tail(1)[0, 0]
+            if "net_import_mw" in consumption_df.columns
+            else None
+        )
 
         for i in range(len(forecast_df)):
             forecast_row = forecast_df[i]
             forecast_time = forecast_row["timestamp"][0]
 
             # Create a combined dataframe with history + current forecast point.
-            # For electricity features (production, wind, nuclear), use latest known values
+            # For electricity features (production, wind, nuclear, net_import), use latest known values
             # since we don't have forecasts for these (yet - could be added later)
             current_row = pl.DataFrame(
                 {
@@ -105,12 +124,13 @@ class Predictor:
                     "production_mw": [latest_production],  # Use latest known value
                     "wind_mw": [latest_wind],  # Use latest known value
                     "nuclear_mw": [latest_nuclear],  # Use latest known value
+                    "net_import_mw": [latest_net_import],  # Use latest known value
                     "temperature": [forecast_row["temperature"][0]],
                     "humidity": [forecast_row["humidity"][0]],
                     "wind_speed": [forecast_row["wind_speed"][0]],
                     "wind_direction": [forecast_row["wind_direction"][0]],
                     "pressure": [forecast_row["pressure"][0]],
-                    "precipitation": [forecast_row["precipitation"][0]],
+                    "precipitation_mm": [forecast_row["precipitation_mm"][0]],
                     "cloud_cover": [forecast_row["cloud_cover"][0]],
                 }
             )
@@ -149,12 +169,13 @@ class Predictor:
                         "production_mw": [latest_production],  # Keep using latest known value
                         "wind_mw": [latest_wind],  # Keep using latest known value
                         "nuclear_mw": [latest_nuclear],  # Keep using latest known value
+                        "net_import_mw": [latest_net_import],  # Keep using latest known value
                         "temperature": [None],
                         "humidity": [None],
                         "wind_speed": [None],
                         "wind_direction": [None],
                         "pressure": [None],
-                        "precipitation": [None],
+                        "precipitation_mm": [None],
                         "cloud_cover": [None],
                     }
                 )
