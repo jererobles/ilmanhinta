@@ -138,9 +138,12 @@ def fetch_latest_predictions(
 
     params: list[Any] = []
     where_clause = ""
+    cte_where_clause = ""
     if model_type:
         where_clause = "AND model_type = %s"
-        params.append(model_type)
+        cte_where_clause = "WHERE model_type = %s"
+        params.append(model_type)  # For CTE
+        params.append(model_type)  # For main query
 
     params.append(limit)
 
@@ -148,7 +151,7 @@ def fetch_latest_predictions(
         WITH latest_run AS (
             SELECT MAX(generated_at) as latest_generated
             FROM predictions
-            WHERE 1=1 {where_clause.replace('AND', 'WHERE') if model_type else ''}
+            {cte_where_clause}
         )
         SELECT
             timestamp,

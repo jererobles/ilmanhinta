@@ -1,30 +1,8 @@
-.PHONY: help install lint format test clean run-api run-dagster docker-build docker-run deploy setup setup-cloud check-env ensure-dirs \
-	railway-help railway-login railway-init railway-link railway-open railway-logs railway-set-fingrid railway-deploy railway-check \
-	railway-auth railway-project-setup railway-service-setup railway-secrets deploy-api deploy-etl \
-	render-help render-login render-services render-deploy \
-	docker-up docker-down docker-restart docker-logs docker-ps docker-exec docker-shell docker-build-fresh \
-	db-migrate db-backup db-restore prod-up prod-down observability-up observability-down
+.PHONY: help install lint format test clean run-api run-dagster docker-build docker-run setup check-env ensure-dirs \
+	docker-up docker-up-full docker-down docker-restart docker-logs docker-ps docker-exec docker-shell docker-build-fresh \
+	db-migrate db-backup db-restore prod-up prod-down
 
-RAILWAY_PROJECT_NAME ?= ilmanhinta
-RAILWAY_SERVICE_NAME ?= app
 SKIP_PRE_COMMIT_INSTALL ?= 0
-
-# ---- helper functions ----
-define get_env_var
-$(shell if [ -n "$(1)" ]; then echo "$(1)"; elif [ -f .env ]; then sed -n 's/^\s*$(2)\s*=\s*//p' .env | sed 's/[[:space:]]*\#.*$$//' | tail -n1; fi)
-endef
-
-define prompt_if_missing
-$(shell if [ -z "$(1)" ]; then read -s -p "Enter $(2): " VAL; echo $$VAL; else echo "$(1)"; fi)
-endef
-
-define railway_var_set
-@railway variables -s "$(RAILWAY_SERVICE_NAME)" --set "$(1)=$(2)" >/dev/null && echo "✅ Set $(1)"
-endef
-
-# lazy eval for env vars
-FINGRID_KEY = $(call get_env_var,$(FINGRID_API_KEY),FINGRID_API_KEY)
-LOGFIRE_TOKEN_VAL = $(call get_env_var,$(LOGFIRE_TOKEN),LOGFIRE_TOKEN)
 
 help:
 	@echo "Ilmanhinta - Finnish Weather → Energy ETL Pipeline"
@@ -32,57 +10,30 @@ help:
 	@echo "Available commands:"
 	@echo "  make install        Install dependencies with uv"
 	@echo "  make setup          First-time setup (.env, dirs, install)"
-	@echo "  make setup-cloud    Setup Railway (login, link/init, secrets)"
 	@echo "  make lint          Run ruff linter"
 	@echo "  make format        Format code with ruff"
 	@echo "  make test          Run tests with pytest"
 	@echo "  make clean         Clean build artifacts"
 	@echo "  make run-api       Start FastAPI server"
 	@echo "  make run-dagster   Start Dagster UI"
+	@echo "  make check-env     Validate required env vars"
 	@echo ""
 	@echo "Docker Compose commands:"
-	@echo "  make docker-up     Start all services with Docker Compose"
-	@echo "  make docker-down   Stop all Docker Compose services"
-	@echo "  make docker-restart Restart all services"
-	@echo "  make docker-logs   Tail logs from all services"
-	@echo "  make docker-ps     Show running containers"
-	@echo "  make docker-shell  Open shell in API container"
-	@echo "  make docker-build-fresh  Rebuild images from scratch"
-	@echo "  make prod-up       Start production stack"
-	@echo "  make prod-down     Stop production stack"
-	@echo ""
-	@echo "Observability (One Command!):"
-	@echo "  make observability-up    Start with full SigNoz stack (auto-install)"
-	@echo "  make observability-down  Stop everything including SigNoz"
+	@echo "  make docker-up          Start with lightweight observability (OTEL only)"
+	@echo "  make docker-up-full     Start with full SigNoz stack (ClickHouse + UI)"
+	@echo "  make docker-down        Stop all Docker Compose services"
+	@echo "  make docker-restart     Restart all services"
+	@echo "  make docker-logs        Tail logs from all services"
+	@echo "  make docker-ps          Show running containers"
+	@echo "  make docker-shell       Open shell in API container"
+	@echo "  make docker-build-fresh Rebuild images from scratch"
+	@echo "  make prod-up            Start production stack"
+	@echo "  make prod-down          Stop production stack"
 	@echo ""
 	@echo "Database commands:"
 	@echo "  make db-migrate    Run database migrations"
 	@echo "  make db-backup     Backup PostgreSQL database"
 	@echo "  make db-restore    Restore database from backup"
-	@echo ""
-	@echo "Legacy deployment:"
-	@echo "  make deploy        Deploy (Render Blueprint preferred)"
-	@echo "  make deploy-api    Deploy only the API service (Railway legacy)"
-	@echo "  make deploy-etl    Deploy only the ETL service (Railway legacy)"
-	@echo "  make check-env     Validate required env vars"
-	@echo ""
-	@echo "Railway helpers:"
-	@echo "  make railway-help          Show Railway helper commands"
-	@echo "  make railway-login         Railway login"
-	@echo "  make railway-init          Create new Railway project from this repo"
-	@echo "  make railway-link          Link to existing Railway project"
-	@echo "  make railway-set-fingrid   Set FINGRID_API_KEY in Railway"
-	@echo "  make railway-deploy        Deploy (alias of 'deploy')"
-	@echo "  make railway-logs          Tail logs"
-	@echo "  make railway-open          Open project in browser"
-	@echo ""
-	@echo "Render helpers:"
-	@echo "  make render-help           Show Render helper commands"
-	@echo "  make render-login          Render CLI login"
-	@echo "  make render-services       List services (non-interactive JSON)"
-	@echo "  make render-deploy         Trigger deploy for a service (RENDER_SERVICE_ID=...)"
-	@echo ""
-	@echo "Tip: set AUTO_INSTALL_RAILWAY=1 to auto-install the Railway CLI"
 
 install:
 	@echo "📦 Installing dependencies..."
@@ -105,62 +56,6 @@ setup: ensure-dirs
 	fi
 	make install
 	@echo "✨ Setup complete"
-
-setup-cloud: setup railway-check railway-auth railway-project-setup railway-service-setup railway-secrets
-	@if [ "$(AUTO_DEPLOY)" = "1" ]; then \
-		echo "🚀 Auto-deploy enabled (AUTO_DEPLOY=1)"; \
-		make deploy; \
-	else \
-		echo "✨ Cloud setup complete. Run 'make deploy' to deploy."; \
-	fi
-
-railway-auth:
-	@echo "🔐 Checking Railway authentication..."
-	@if railway whoami >/dev/null 2>&1; then \
-		echo "✅ Railway authenticated"; \
-	else \
-		echo "🔐 Logging into Railway..."; \
-		railway login || { echo "❌ Railway login failed"; exit 1; }; \
-	fi
-
-railway-project-setup:
-	@echo "🔗 Linking project '$(RAILWAY_PROJECT_NAME)'..."
-	@if railway link --project "$(RAILWAY_PROJECT_NAME)" >/dev/null 2>&1 || \
-		railway link -p "$(RAILWAY_PROJECT_NAME)" >/dev/null 2>&1 || \
-		railway link "$(RAILWAY_PROJECT_NAME)" >/dev/null 2>&1; then \
-		echo "✅ Project linked: $(RAILWAY_PROJECT_NAME)"; \
-	else \
-		echo "ℹ️  Project not found; creating '$(RAILWAY_PROJECT_NAME)'..."; \
-		if railway init --name "$(RAILWAY_PROJECT_NAME)" >/dev/null 2>&1 || \
-		   railway init -n "$(RAILWAY_PROJECT_NAME)" >/dev/null 2>&1; then \
-			echo "✅ Project created: $(RAILWAY_PROJECT_NAME)"; \
-		else \
-			echo "⚠️  Non-interactive create failed. Launching interactive 'railway init'..."; \
-			railway init || { echo "❌ Railway init failed"; exit 1; }; \
-		fi; \
-	fi
-
-railway-service-setup:
-	@echo "🧩 Selecting service '$(RAILWAY_SERVICE_NAME)'..."
-	@if railway service "$(RAILWAY_SERVICE_NAME)" >/dev/null 2>&1; then \
-		echo "✅ Service selected: $(RAILWAY_SERVICE_NAME)"; \
-	else \
-		echo "⚠️  Service not found. Creating..."; \
-		railway add -s "$(RAILWAY_SERVICE_NAME)" \
-			--variables "" >/dev/null || { echo "❌ Service creation failed"; exit 1; }; \
-	fi
-
-railway-volumes:
-	@echo "📦 Configuring volumes in Railway..."
-	@railway volumes -s "$(RAILWAY_SERVICE_NAME)" \
-		$(if $(FINGRID_KEY),--set "FINGRID_API_KEY=$(FINGRID_KEY)") \
-		$(if $(LOGFIRE_TOKEN_VAL),--set "LOGFIRE_TOKEN=$(LOGFIRE_TOKEN_VAL)") >/dev/null && echo "✅ Volumes configured"
-
-railway-secrets:
-	@echo "🔐 Configuring secrets in Railway..."
-	@railway variables -s "$(RAILWAY_SERVICE_NAME)" \
-		$(if $(FINGRID_KEY),--set "FINGRID_API_KEY=$(FINGRID_KEY)") \
-		$(if $(LOGFIRE_TOKEN_VAL),--set "LOGFIRE_TOKEN=$(LOGFIRE_TOKEN_VAL)") >/dev/null && echo "✅ Secrets configured"
 
 ensure-dirs:
 	@echo "📁 Ensuring data and Dagster dirs..."
@@ -204,76 +99,6 @@ docker-run:
 	@echo "🐳 Running Docker container..."
 	docker run -p 8000:8000 --env-file .env ilmanhinta:latest
 
-deploy:
-	@echo "ℹ️  Render is now the preferred deployment target."
-	@echo "   Use the 'render.yaml' Blueprint from the Render Dashboard to apply changes."
-	@echo "   CLI: install 'render', then 'render services --output json --confirm'."
-	@echo "✅ Nothing to do here by default."
-
-deploy-api:
-	@$(MAKE) railway-check
-	@echo "🚀 Deploying API service..."
-	railway up --path-as-root services/api
-
-deploy-etl:
-	@$(MAKE) railway-check
-	@echo "🚀 Deploying ETL service..."
-	cd services/etl && railway up --path-as-root ../..
-
-railway-help:
-	@echo "Railway helper commands:"
-	@echo "  make railway-login         Railway login"
-	@echo "  make railway-init          Create new Railway project from this repo"
-	@echo "  make railway-link          Link to existing Railway project"
-	@echo "  make railway-set-fingrid   Set FINGRID_API_KEY in Railway"
-	@echo "  make railway-deploy        Deploy (alias of 'deploy')"
-	@echo "  make railway-logs          Tail logs"
-	@echo "  make railway-open          Open project in browser"
-
-railway-login: railway-check
-	railway login
-
-railway-init: railway-check
-	railway init
-
-railway-link: railway-check
-	railway link
-
-railway-open: railway-check
-	railway open
-
-railway-logs: railway-check
-	railway logs
-
-railway-set-fingrid: railway-check
-	@echo "🔐 Setting FINGRID_API_KEY in Railway..."
-	@FINGRID_VAL="$(FINGRID_KEY)"; \
-	if [ -z "$$FINGRID_VAL" ]; then \
-		echo "❌ Missing FINGRID_API_KEY. Usage: make railway-set-fingrid FINGRID_API_KEY=..."; \
-		exit 1; \
-	fi; \
-	railway variables -s "$(RAILWAY_SERVICE_NAME)" --set "FINGRID_API_KEY=$$FINGRID_VAL" >/dev/null && echo "✅ Set FINGRID_API_KEY in Railway"
-
-railway-deploy: deploy
-
-railway-check:
-	@if ! command -v railway >/dev/null 2>&1; then \
-		echo "❌ Railway CLI not found."; \
-		if [ "$(AUTO_INSTALL_RAILWAY)" = "1" ]; then \
-			if command -v brew >/dev/null 2>&1; then \
-				echo "📦 Installing Railway via Homebrew..."; \
-				brew install railway || { echo "Failed to install Railway via brew"; exit 1; }; \
-			else \
-				echo "📦 Installing Railway via official install script..."; \
-				curl -fsSL https://railway.app/install.sh | sh || { echo "Failed to install Railway via script"; exit 1; }; \
-			fi; \
-		else \
-			echo "➡️  Install it with: brew install railway"; \
-			echo "    or: curl -fsSL https://railway.app/install.sh | sh"; \
-			exit 1; \
-		fi; \
-	fi
-
 check-env:
 	@echo "🔐 Validating environment configuration..."
 	@if [ ! -f .env ]; then \
@@ -281,86 +106,34 @@ check-env:
 		exit 1; \
 	fi
 
-# ------------------- Render helpers -------------------
-render-help:
-	@echo "Render helper commands:"
-	@echo "  make render-login          Render login via browser"
-	@echo "  make render-services       List services in JSON"
-	@echo "  make render-deploy         Deploy a service by ID (RENDER_SERVICE_ID=...)"
-	@echo "Notes:"
-	@echo "  - Initial provisioning is done via the Render Dashboard using render.yaml"
-	@echo "  - Set RENDER_API_KEY in CI to use non-interactive mode"
-
-render-login:
-	@if ! command -v render >/dev/null 2>&1; then \
-		echo "❌ Render CLI not found. Install with: brew install render"; \
-		echo "   or: curl -fsSL https://raw.githubusercontent.com/render-oss/cli/refs/heads/main/bin/install.sh | sh"; \
-		exit 1; \
-	fi
-	render login
-
-render-services:
-	@render services --output json --confirm
-
-render-deploy:
-	@if [ -z "$$RENDER_SERVICE_ID" ]; then \
-		echo "Usage: make render-deploy RENDER_SERVICE_ID=<service-id>"; \
-		exit 1; \
-	fi
-	render deploys create "$$RENDER_SERVICE_ID" --wait --output json --confirm
-	@FINGRID_VAL="$(FINGRID_KEY)"; \
-	if [ -z "$$FINGRID_VAL" ]; then \
-		echo "❌ FINGRID_API_KEY is missing in .env"; \
-		echo "   Edit .env and set a valid key from https://data.fingrid.fi"; \
-		exit 1; \
-	else \
-		echo "✅ Required env vars present"; \
-	fi
-
 # ------------------- Docker Compose commands -------------------
 docker-up:
-	@echo "🐳 Starting Docker Compose services..."
+	@echo "🐳 Starting Docker Compose services (lightweight observability)..."
 	docker-compose up -d
 	@echo "✅ Services started. Check status with 'make docker-ps'"
+	@echo ""
+	@echo "🌐 Access points:"
 	@echo "   API: http://localhost:8000"
 	@echo "   Dagster: http://localhost:3000"
-	@echo "   Prometheus: http://localhost:9090"
+	@echo "   OTEL Collector metrics: http://localhost:8889/metrics (real-time)"
 	@echo ""
-	@echo "💡 For full observability (traces, logs, metrics), install SigNoz:"
-	@echo "   See SIGNOZ_SETUP.md for instructions"
+	@echo "💡 For persistent storage + SigNoz UI:"
+	@echo "   make docker-up-full"
+
+docker-up-full:
+	@echo "🔍 Starting with full SigNoz observability stack..."
+	OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector-signoz:4318 docker-compose --profile signoz up -d
+	@echo ""
+	@echo "✅ Full SigNoz stack running:"
+	@echo "   API: http://localhost:8000"
+	@echo "   Dagster: http://localhost:3000"
+	@echo "   OTEL Collector metrics: http://localhost:8889/metrics (real-time)"
+	@echo "   SigNoz UI: http://localhost:3301"
 
 docker-down:
 	@echo "🛑 Stopping Docker Compose services..."
-	docker-compose down
+	docker-compose --profile signoz down
 	@echo "✅ Services stopped"
-
-# Full observability stack (auto-installs and starts SigNoz)
-observability-up:
-	@echo "🔍 Starting full observability stack..."
-	@if [ ! -d "../signoz" ]; then \
-		echo "📥 SigNoz not found. Installing to ../signoz..."; \
-		cd .. && git clone -b main https://github.com/SigNoz/signoz.git; \
-	fi
-	@echo "🚀 Starting SigNoz..."
-	@cd ../signoz/deploy/docker && docker compose up -d
-	@echo "⏳ Waiting for SigNoz to initialize (30s)..."
-	@sleep 30
-	@echo "🐳 Starting ilmanhinta with SigNoz integration..."
-	docker-compose -f docker-compose.yml -f docker-compose.signoz.yml up -d
-	@echo ""
-	@echo "✅ Full observability stack running:"
-	@echo "   API: http://localhost:8000"
-	@echo "   Dagster: http://localhost:3000"
-	@echo "   Prometheus: http://localhost:9090"
-	@echo "   SigNoz: http://localhost:3301"
-
-observability-down:
-	@echo "🛑 Stopping observability stack..."
-	docker-compose down
-	@if [ -d "../signoz/deploy/docker" ]; then \
-		cd ../signoz/deploy/docker && docker compose down; \
-	fi
-	@echo "✅ Everything stopped"
 
 docker-restart:
 	@echo "🔄 Restarting Docker Compose services..."

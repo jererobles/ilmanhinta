@@ -10,7 +10,9 @@ CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 -- Enable timescaledb-toolkit (advanced analytics functions)
 -- Provides: stats_agg(), time_weight(), percentile_agg(), uddsketch(), etc.
+-- Included in timescaledb-ha image
 CREATE EXTENSION IF NOT EXISTS timescaledb_toolkit;
+ALTER EXTENSION timescaledb_toolkit UPDATE;
 
 -- Enable pg_stat_monitor (query performance monitoring)
 -- Percona's enhanced version of pg_stat_statements with time-bucketed statistics
@@ -158,6 +160,8 @@ SELECT add_compression_policy('electricity_prices',
 CREATE INDEX IF NOT EXISTS idx_consumption_time ON electricity_consumption(time DESC);
 CREATE INDEX IF NOT EXISTS idx_weather_station_time ON weather_observations(station_id, time DESC);
 CREATE INDEX IF NOT EXISTS idx_weather_type ON weather_observations(data_type, time DESC);
+CREATE INDEX IF NOT EXISTS idx_weather_forecast_lookup ON weather_observations(station_id, data_type, time DESC)
+    WHERE data_type = 'forecast';
 CREATE INDEX IF NOT EXISTS idx_prices_area ON electricity_prices(area, time DESC);
 CREATE INDEX IF NOT EXISTS idx_predictions_model ON predictions(model_type, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_predictions_generated ON predictions(generated_at DESC);
@@ -174,6 +178,9 @@ SELECT
     time_bucket('1 hour', time) AS hour,
     -- Use stats_agg for consumption (stores all statistics in one aggregate)
     stats_agg(consumption_mw) AS consumption_stats,
+    -- Explicit max/min since stats_agg doesn't provide accessors for these
+    MAX(consumption_mw) AS max_consumption_mw,
+    MIN(consumption_mw) AS min_consumption_mw,
     -- Individual averages for other metrics
     AVG(production_mw) AS avg_production_mw,
     AVG(wind_mw) AS avg_wind_mw,
@@ -200,6 +207,9 @@ SELECT
     area,
     -- Use stats_agg for basic statistics
     stats_agg(price_eur_mwh) AS price_stats,
+    -- Explicit max/min since stats_agg doesn't provide accessors for these
+    MAX(price_eur_mwh) AS max_price,
+    MIN(price_eur_mwh) AS min_price,
     -- Use uddsketch for percentile approximations (faster than exact percentiles)
     uddsketch(100, 0.001, price_eur_mwh) AS price_distribution
 FROM electricity_prices
@@ -216,8 +226,8 @@ SELECT add_continuous_aggregate_policy('prices_daily',
 -- 3. CRITICAL: Prediction accuracy metrics (for model evaluation)
 -- This joins predictions with actual consumption to track model performance
 -- Using timescaledb-toolkit for cleaner error statistics
-CREATE MATERIALIZED VIEW IF NOT EXISTS prediction_accuracy_hourly
-WITH (timescaledb.continuous) AS
+-- NOTE: Regular materialized view (not continuous aggregate) because it joins multiple hypertables
+CREATE MATERIALIZED VIEW IF NOT EXISTS prediction_accuracy_hourly AS
 SELECT
     time_bucket('1 hour', p.timestamp) AS hour,
     p.model_type,
@@ -252,21 +262,15 @@ JOIN electricity_consumption c
     ON time_bucket('1 hour', c.time) = time_bucket('1 hour', p.timestamp)
 -- Only evaluate predictions that have passed (1 hour buffer)
 WHERE p.timestamp < NOW() - INTERVAL '1 hour'
-GROUP BY hour, p.model_type
-WITH NO DATA;
+GROUP BY hour, p.model_type;
 
--- Refresh daily (predictions need time to materialize actual values)
-SELECT add_continuous_aggregate_policy('prediction_accuracy_hourly',
-    start_offset => INTERVAL '7 days',
-    end_offset => INTERVAL '2 hours', -- 2-hour buffer to ensure actual data is available
-    schedule_interval => INTERVAL '1 day',
-    if_not_exists => TRUE
-);
+-- Create unique index for CONCURRENT refresh support
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prediction_accuracy_hourly_unique ON prediction_accuracy_hourly(hour, model_type);
 
 -- 4. Daily prediction accuracy rollup (for trend analysis)
 -- Rolls up hourly stats_agg into daily aggregates
-CREATE MATERIALIZED VIEW IF NOT EXISTS prediction_accuracy_daily
-WITH (timescaledb.continuous) AS
+-- NOTE: Regular materialized view (queries from another materialized view)
+CREATE MATERIALIZED VIEW IF NOT EXISTS prediction_accuracy_daily AS
 SELECT
     time_bucket('1 day', hour) AS day,
     model_type,
@@ -280,20 +284,15 @@ SELECT
     AVG(coverage_percent) AS avg_coverage_percent,
     rollup(interval_width_stats) AS daily_interval_width_stats
 FROM prediction_accuracy_hourly
-GROUP BY day, model_type
-WITH NO DATA;
+GROUP BY day, model_type;
 
-SELECT add_continuous_aggregate_policy('prediction_accuracy_daily',
-    start_offset => INTERVAL '14 days',
-    end_offset => INTERVAL '1 day',
-    schedule_interval => INTERVAL '1 day',
-    if_not_exists => TRUE
-);
+-- Create unique index for CONCURRENT refresh support
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prediction_accuracy_daily_unique ON prediction_accuracy_daily(day, model_type);
 
 -- 5. Model comparison view (latest 24h performance)
 -- Using timescaledb-toolkit for efficient error statistics
-CREATE MATERIALIZED VIEW IF NOT EXISTS model_comparison_24h
-WITH (timescaledb.continuous) AS
+-- NOTE: Regular materialized view (joins multiple hypertables)
+CREATE MATERIALIZED VIEW IF NOT EXISTS model_comparison_24h AS
 SELECT
     p.model_type,
     COUNT(*) AS prediction_count,
@@ -312,16 +311,10 @@ JOIN electricity_consumption c
     ON time_bucket('1 hour', c.time) = time_bucket('1 hour', p.timestamp)
 WHERE p.timestamp >= NOW() - INTERVAL '24 hours'
   AND p.timestamp < NOW() - INTERVAL '1 hour'
-GROUP BY p.model_type
-WITH NO DATA;
+GROUP BY p.model_type;
 
--- Refresh every hour
-SELECT add_continuous_aggregate_policy('model_comparison_24h',
-    start_offset => INTERVAL '2 days',
-    end_offset => INTERVAL '1 hour',
-    schedule_interval => INTERVAL '1 hour',
-    if_not_exists => TRUE
-);
+-- Create unique index for CONCURRENT refresh support
+CREATE UNIQUE INDEX IF NOT EXISTS idx_model_comparison_24h_unique ON model_comparison_24h(model_type);
 
 -- =============================================================================
 -- RETENTION POLICIES (Optional - auto-delete old data)
@@ -406,8 +399,8 @@ CREATE OR REPLACE VIEW consumption_hourly_stats AS
 SELECT
     hour,
     average(consumption_stats) AS avg_consumption_mw,
-    max(consumption_stats) AS max_consumption_mw,
-    min(consumption_stats) AS min_consumption_mw,
+    max_consumption_mw,
+    min_consumption_mw,
     stddev(consumption_stats) AS std_consumption_mw,
     variance(consumption_stats) AS var_consumption_mw,
     avg_production_mw,
@@ -422,8 +415,8 @@ SELECT
     day,
     area,
     average(price_stats) AS avg_price,
-    max(price_stats) AS max_price,
-    min(price_stats) AS min_price,
+    max_price,
+    min_price,
     stddev(price_stats) AS price_volatility,
     approx_percentile(0.5, price_distribution) AS median_price,
     approx_percentile(0.95, price_distribution) AS p95_price,
@@ -498,7 +491,7 @@ SELECT
     min_exec_time,
     stddev_exec_time,
     total_exec_time,
-    rows_avg,
+    rows,
     -- Query text (first 100 chars)
     substring(query, 1, 100) AS query_preview
 FROM pg_stat_monitor
@@ -527,7 +520,7 @@ SELECT
     calls,
     mean_exec_time,
     total_exec_time,
-    rows_avg,
+    rows,
     substring(query, 1, 150) AS query_preview
 FROM pg_stat_monitor
 ORDER BY calls DESC

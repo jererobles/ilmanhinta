@@ -1,6 +1,6 @@
 # ⚡ Ilmanhinta - Finnish Weather → Energy Consumption Prediction
 
-Production-grade ETL pipeline predicting electricity consumption based on Finnish weather data. Built with modern Python tooling (DuckDB, Prophet, Logfire) and deployed to Render.
+Production-grade ETL pipeline predicting electricity consumption based on Finnish weather data. Built with modern Python tooling (TimescaleDB, Prophet, Logfire).
 
 [![CI/CD](https://github.com/jererobles/ilmanhinta/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/ilmanhinta/actions)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -10,7 +10,7 @@ Production-grade ETL pipeline predicting electricity consumption based on Finnis
 ## 🎯 Features
 
 - **Real-time data ingestion** from Fingrid (electricity) and FMI (weather) APIs
-- **DuckDB OLAP engine** for time-series storage and SQL queries (replaces separate cache/DB)
+- **TimescaleDB time-series database** for PostgreSQL with hypertables and continuous aggregates
 - **Temporal joins** with Polars for high-performance data processing
 - **Feature engineering** with sliding windows, lag features, and weather interactions
 - **Ensemble forecasting** combining Prophet (seasonality) + LightGBM (features)
@@ -18,7 +18,6 @@ Production-grade ETL pipeline predicting electricity consumption based on Finnis
 - **Logfire observability** with automatic FastAPI tracing (Pydantic-native)
 - **Dagster** orchestration with hourly ingestion and daily model retraining
 - **FastAPI** service with Prometheus metrics and uncertainty intervals
-- **Railway** deployment with health checks and persistent volume
 
 ## 🚀 Quick Start
 
@@ -37,9 +36,6 @@ cd ilmanhinta
 
 # One-liner quickstart (creates .env, folders, installs deps)
 scripts/quickstart.sh
-
-# One-liner including Railway setup (login/link/init, secrets)
-scripts/quickstart.sh --cloud
 
 # Or do it step-by-step with Makefile
 make setup
@@ -101,17 +97,17 @@ curl http://localhost:8000/metrics
     ┌──────────────────────────────────────────┐
     │        Dagster Orchestration             │
     │  ┌────────────────────────────────────┐  │
-    │  │  Hourly: Ingest to DuckDB+Parquet  │  │
+    │  │  Hourly: Ingest to TimescaleDB     │  │
     │  │  Daily: Train ensemble models      │  │
     │  └────────────────────────────────────┘  │
     └──────────────────┬───────────────────────┘
                        │
                        ▼
            ┌───────────────────────┐
-           │   DuckDB Data Layer   │
-           │  - SQL temporal joins │
-           │  - OLAP queries       │
-           │  - Native Parquet I/O │
+           │  TimescaleDB Layer    │
+           │  - Hypertables        │
+           │  - Continuous aggr.   │
+           │  - Auto compression   │
            └───────────┬───────────┘
                        │
                        ▼
@@ -151,12 +147,6 @@ curl http://localhost:8000/metrics
           │  │ /metrics       │  │
           │  └────────────────┘  │
           └──────────────────────┘
-                     │
-                     ▼
-              ┌──────────┐
-              │ Render   │
-              │  (EU)    │
-              └──────────┘
 ```
 
 ## 📊 Data Sources
@@ -192,7 +182,7 @@ curl http://localhost:8000/metrics
 - **uv**: Next-generation Python package manager (10-100x faster than pip)
 - **Polars**: High-performance DataFrame library (faster than pandas)
 - **Pydantic v2**: Data validation with 5-50x performance boost
-- **DuckDB**: In-process OLAP database for time-series queries
+- **TimescaleDB**: PostgreSQL extension for time-series data with hypertables and continuous aggregates
 - **Prophet**: Facebook's seasonal forecasting with holiday effects
 - **LightGBM**: Gradient boosting for time series prediction
 
@@ -205,50 +195,9 @@ curl http://localhost:8000/metrics
 ### Monitoring & Deployment
 
 - **Logfire**: Pydantic-native observability with auto-instrumentation
-- **Prometheus**: Metrics collection (request latency, predictions)
-- **Render**: Cloud application platform with Blueprints & persistent disks
+- **OpenTelemetry Collector**: Lightweight telemetry collection (ephemeral by default)
+- **SigNoz** (optional): Full observability stack with persistent storage and UI
 - **Docker**: Multi-stage builds for small images
-
-## 🚀 Deploying to Render
-
-This repo includes a single `render.yaml` Blueprint at the repository root that defines:
-
-- A web service for the FastAPI API (`ilmanhinta-api`)
-- A worker service for Dagster ingestion/training (`ilmanhinta-etl`) with a persistent disk
-- A Render Postgres database used to share predictions between ETL and API
-
-Steps:
-
-1) Ensure your repo is pushed to GitHub/GitLab/Bitbucket.
-
-2) In the Render Dashboard:
-   - New → Blueprint → Select this repo
-   - Review the plan and click “Apply”
-
-3) Provide secret values when prompted (at minimum):
-   - `FINGRID_API_KEY` (ETL service)
-   - `LOGFIRE_TOKEN` (optional, for observability)
-
-4) After the Blueprint is applied, Render provisions:
-   - Postgres (`ilmanhinta-db`) and injects `DATABASE_URL` into both services
-   - The API service (binds to `$PORT`, health check on `/health`)
-   - The ETL worker (starts Dagster gRPC + daemon via `scripts/start-etl.sh`)
-
-Notes:
-
-- The ETL worker mounts a persistent disk at `/var/data` and sets `DATA_DIR=/var/data` so DuckDB and model artifacts persist.
-- Predictions are stored in Postgres; the API reads from the same database.
-- You can adjust instance types/region in `render.yaml` (defaults to free tier, region `frankfurt`).
-
-CLI (optional):
-
-- Install: `brew install render` or use the install script from Render’s docs.
-- List resources: `render services --output json --confirm`
-- Trigger deploys: `render deploys create <SERVICE_ID> --wait --output json --confirm`
-
-Railway (legacy):
-
-Existing Railway files are retained under `services/` but are no longer used by default.
 
 ### Code Quality
 
@@ -322,44 +271,105 @@ Typical performance on test set:
 - **Model versioning**: Timestamped model files (prophet*\*, lightgbm*\*)
 - **Ensemble**: Automatically created from latest Prophet + LightGBM models
 
-## 💾 DuckDB Data Layer
+## 💾 TimescaleDB Data Layer
 
-DuckDB replaces multiple separate tools (Redis cache, Postgres storage, manual joins):
+TimescaleDB extends PostgreSQL with time-series superpowers:
 
 ### Architecture
 
-- **In-process OLAP database** stored as single file: `data/ilmanhinta.duckdb`
-- **Native Parquet reading** via `read_parquet()` for zero-copy ingestion
-- **Polars interop** through Arrow for efficient data transfer
-- **SQL-based temporal joins** replacing complex Python join logic
+- **PostgreSQL extension** with hypertables for automatic partitioning
+- **Continuous aggregates** for pre-computed analytics (no expensive queries)
+- **Automatic compression** for older data (70-95% space savings)
+- **Native SQL** with all PostgreSQL features (triggers, constraints, foreign keys)
 
-### Tables
+### Hypertables
 
-**consumption:**
+**electricity_consumption:**
 
-- Fingrid electricity data (consumption, production, wind, nuclear)
-- 15-minute resolution aligned to hourly for ML
-- Indexed on timestamp for fast queries
+- Fingrid real-time data (consumption, production, wind, nuclear, net import)
+- 3-minute resolution data
+- Automatic partitioning by time for query performance
+- Compressed after 7 days
 
-**weather:**
+**weather_observations:**
 
 - FMI observations and forecasts
 - Weather parameters (temperature, humidity, wind, pressure, etc.)
 - Supports both observation and forecast data types
+- Indexed for fast lookups
 
 **predictions:**
 
 - Model forecasts with confidence intervals
 - Tracks model type (prophet, lightgbm, ensemble)
 - Version tracking for model comparisons
+- Indexed on timestamp and model_type
+
+### Continuous Aggregates
+
+Pre-computed views updated automatically:
+
+- **prediction_accuracy_daily_stats**: Daily model accuracy metrics (MAE, RMSE, coverage)
+- **model_comparison_24h_stats**: Real-time model performance comparison
+- **consumption_hourly_stats**: Hourly consumption statistics with min/max/avg/stddev
 
 ### Benefits
 
-- **Single dependency** replaces Redis + Postgres + manual file scanning
-- **SQL queries** for complex time-series operations (ASOF joins, windows)
-- **Fast**: Columnar storage with Parquet compression
-- **Small**: Entire database fits in Docker image
-- **Embeddable**: No separate database server needed
+- **Production-ready**: Battle-tested PostgreSQL reliability
+- **Real-time analytics**: Continuous aggregates provide instant insights
+- **Space efficient**: Automatic compression reduces storage costs
+- **Standard SQL**: No vendor lock-in, full PostgreSQL ecosystem
+- **Scalable**: Handles millions of time-series data points efficiently
+
+## 🔄 Database Migrations
+
+We use Alembic for database schema migrations. This provides version control for database changes, making it safe to update schemas in production.
+
+### Running Migrations
+
+```bash
+# Check current migration status
+./scripts/check_migration_status.sh
+
+# Run all pending migrations
+./scripts/run_migrations.sh
+
+# Run one migration forward
+./scripts/run_migrations.sh upgrade +1
+
+# Rollback one migration
+./scripts/run_migrations.sh downgrade -1
+```
+
+### Creating New Migrations
+
+```bash
+# Create a new migration file
+uv run alembic revision -m "description_of_change"
+
+# Edit the generated file in migrations/versions/
+# Add upgrade() and downgrade() logic
+
+# Test the migration
+./scripts/run_migrations.sh upgrade +1
+./scripts/check_migration_status.sh
+
+# If needed, rollback
+./scripts/run_migrations.sh downgrade -1
+```
+
+### Migration Files
+
+- **migrations/versions/0ad289207078_baseline_timescaledb_schema.py**: Initial schema with hypertables, continuous aggregates, and indexes
+- **migrations/versions/04ac04d57f32_add_forecast_index.py**: Adds partial index for weather forecast lookups
+
+### Best Practices
+
+- Always test migrations in development before production
+- Use transactions (migrations are atomic by default)
+- Write both upgrade() and downgrade() functions
+- Document breaking changes in migration docstrings
+- Never modify existing migrations (create new ones instead)
 
 ## 🔍 Logfire Observability
 
@@ -384,61 +394,11 @@ No configuration files, no complex setup. It just works™.
 ### What Gets Traced
 
 - Every FastAPI request (method, path, duration, status)
-- Database queries (DuckDB operations)
+- Database queries (TimescaleDB operations)
 - Model predictions (features, outputs, confidence)
 - External API calls (Fingrid, FMI)
 
 ## 🚀 Deployment
-
-### Deploy to Railway
-
-```bash
-# Install Railway CLI
-# macOS (Homebrew)
-brew install railway
-
-# or generic install script
-curl -fsSL https://railway.app/install.sh | sh
-
-# Login (optional if you used '--cloud' or 'make setup-cloud')
-# Tip: you can also use the Makefile which checks/installs the CLI
-# make railway-login
-railway login
-
-# Link a project the first time (choose ONE) — optional if you used '--cloud':
-# - Create a new project from this repo (recommended)
-# or: make railway-init
-railway init
-# - OR link to an existing project
-# or: make railway-link
-railway link
-
-# Set required variables in Railway (never commit secrets)
-railway variables set FINGRID_API_KEY=$FINGRID_API_KEY
-
-# Deploy both services (services/api + services/etl)
-make deploy
-
-# Deploy a single service (if needed)
-make deploy-api   # FastAPI frontend
-make deploy-etl   # Dagster workers
-
-# If Railway CLI is not installed:
-# - The Makefile shows install instructions, or auto-installs when set:
-# AUTO_INSTALL_RAILWAY=1 make railway-login
-
-# View logs
-railway logs
-
-# Open in browser
-railway open
-```
-
-Notes:
-
-- `services/api/railway.json` and `services/etl/railway.json` describe the two services. Run `railway up` (or `make deploy-*`) from those folders so Railway knows which entrypoint to use.
-- Attach a volume per service and mount it at `/app/data` to persist DuckDB + model files on ETL and cache files on the API.
-- Railway injects `PORT`; both processes listen on `${PORT}` (or `4000` for the Dagster gRPC server, configured via `scripts/start-etl.sh`).
 
 ### Environment Variables
 
@@ -451,7 +411,6 @@ make check-env
 Notes:
 
 - `.env` is ignored by Git; never commit secrets.
-- For production (Railway), set secrets via `railway variables set`.
 
 Required:
 
@@ -569,13 +528,13 @@ docker run -p 8000:8000 --env-file .env ilmanhinta
 ## 🎯 Roadmap
 
 - [x] Ensemble models (Prophet + LightGBM)
-- [x] DuckDB for OLAP queries on time-series data
+- [x] TimescaleDB for production-grade time-series data
 - [x] Logfire observability with auto-instrumentation
 - [ ] Add Grafana dashboard for monitoring
 - [ ] Implement spot price prediction (Nord Pool integration)
 - [ ] Multi-region support (multiple FMI stations)
 - [ ] Real-time prediction updates every 3 minutes
-- [ ] Historical data backfilling via DuckDB
+- [ ] Historical data backfilling via TimescaleDB
 - [ ] Model performance tracking over time
 - [ ] API endpoints for ensemble component breakdown (interpretability)
 

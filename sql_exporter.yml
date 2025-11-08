@@ -1,0 +1,308 @@
+# SQL Exporter Configuration for pg_stat_monitor Metrics
+# https://github.com/burningalchemist/sql_exporter
+#
+# This replaces the deprecated postgres-exporter custom queries feature
+# with the dedicated, purpose-built sql_exporter tool.
+
+# Global settings
+global:
+  # Scrape timeout
+  scrape_timeout: 10s
+  # Minimum interval between collecting metrics from the same target
+  min_interval: 0s
+  # Maximum number of open connections to any one target
+  max_connections: 3
+  # Maximum number of idle connections to any one target
+  max_idle_connections: 3
+
+# Target configuration
+target:
+  # Data source name (will be overridden by environment variable)
+  data_source_name: 'postgresql://api:password@postgres:5432/ilmanhinta?sslmode=disable'
+  # Link to collectors
+  collectors: [pg_stat_monitor]
+
+# Collector definitions
+collectors:
+  # Collector for pg_stat_monitor detailed metrics
+  - collector_name: pg_stat_monitor
+
+    # Metrics definitions
+    metrics:
+      # Detailed query statistics by database, user, and command type
+      - metric_name: pg_stat_monitor_calls_total
+        type: counter
+        help: 'Number of times queries were executed'
+        key_labels:
+          - database
+          - username
+          - command_type
+        values: [calls]
+        query: |
+          SELECT
+            datname as database,
+            username,
+            COALESCE(cmd_type_text, 'UNKNOWN') as command_type,
+            SUM(calls) as calls
+          FROM pg_stat_monitor
+          WHERE datname IS NOT NULL
+          GROUP BY datname, username, cmd_type_text
+
+      - metric_name: pg_stat_monitor_exec_time_milliseconds_total
+        type: counter
+        help: 'Total execution time in milliseconds'
+        key_labels:
+          - database
+          - username
+          - command_type
+        values: [total_exec_time]
+        query: |
+          SELECT
+            datname as database,
+            username,
+            COALESCE(cmd_type_text, 'UNKNOWN') as command_type,
+            SUM(total_exec_time) as total_exec_time
+          FROM pg_stat_monitor
+          WHERE datname IS NOT NULL
+          GROUP BY datname, username, cmd_type_text
+
+      - metric_name: pg_stat_monitor_mean_exec_time_milliseconds
+        type: gauge
+        help: 'Average execution time in milliseconds'
+        key_labels:
+          - database
+          - username
+          - command_type
+        values: [mean_exec_time]
+        query: |
+          SELECT
+            datname as database,
+            username,
+            COALESCE(cmd_type_text, 'UNKNOWN') as command_type,
+            AVG(mean_exec_time) as mean_exec_time
+          FROM pg_stat_monitor
+          WHERE datname IS NOT NULL
+          GROUP BY datname, username, cmd_type_text
+
+      - metric_name: pg_stat_monitor_max_exec_time_milliseconds
+        type: gauge
+        help: 'Maximum execution time in milliseconds'
+        key_labels:
+          - database
+          - username
+          - command_type
+        values: [max_exec_time]
+        query: |
+          SELECT
+            datname as database,
+            username,
+            COALESCE(cmd_type_text, 'UNKNOWN') as command_type,
+            MAX(max_exec_time) as max_exec_time
+          FROM pg_stat_monitor
+          WHERE datname IS NOT NULL
+          GROUP BY datname, username, cmd_type_text
+
+      - metric_name: pg_stat_monitor_rows_total
+        type: counter
+        help: 'Total number of rows retrieved or affected'
+        key_labels:
+          - database
+          - username
+          - command_type
+        values: [rows]
+        query: |
+          SELECT
+            datname as database,
+            username,
+            COALESCE(cmd_type_text, 'UNKNOWN') as command_type,
+            SUM(rows) as rows
+          FROM pg_stat_monitor
+          WHERE datname IS NOT NULL
+          GROUP BY datname, username, cmd_type_text
+
+      - metric_name: pg_stat_monitor_shared_blks_hit_total
+        type: counter
+        help: 'Shared blocks cache hits'
+        key_labels:
+          - database
+          - username
+          - command_type
+        values: [shared_blks_hit]
+        query: |
+          SELECT
+            datname as database,
+            username,
+            COALESCE(cmd_type_text, 'UNKNOWN') as command_type,
+            SUM(shared_blks_hit) as shared_blks_hit
+          FROM pg_stat_monitor
+          WHERE datname IS NOT NULL
+          GROUP BY datname, username, cmd_type_text
+
+      - metric_name: pg_stat_monitor_shared_blks_read_total
+        type: counter
+        help: 'Shared blocks read from disk'
+        key_labels:
+          - database
+          - username
+          - command_type
+        values: [shared_blks_read]
+        query: |
+          SELECT
+            datname as database,
+            username,
+            COALESCE(cmd_type_text, 'UNKNOWN') as command_type,
+            SUM(shared_blks_read) as shared_blks_read
+          FROM pg_stat_monitor
+          WHERE datname IS NOT NULL
+          GROUP BY datname, username, cmd_type_text
+
+      - metric_name: pg_stat_monitor_cpu_user_time_seconds_total
+        type: counter
+        help: 'CPU user time in seconds'
+        key_labels:
+          - database
+          - username
+          - command_type
+        values: [cpu_user_time]
+        query: |
+          SELECT
+            datname as database,
+            username,
+            COALESCE(cmd_type_text, 'UNKNOWN') as command_type,
+            SUM(cpu_user_time) as cpu_user_time
+          FROM pg_stat_monitor
+          WHERE datname IS NOT NULL
+          GROUP BY datname, username, cmd_type_text
+
+      - metric_name: pg_stat_monitor_cpu_sys_time_seconds_total
+        type: counter
+        help: 'CPU system time in seconds'
+        key_labels:
+          - database
+          - username
+          - command_type
+        values: [cpu_sys_time]
+        query: |
+          SELECT
+            datname as database,
+            username,
+            COALESCE(cmd_type_text, 'UNKNOWN') as command_type,
+            SUM(cpu_sys_time) as cpu_sys_time
+          FROM pg_stat_monitor
+          WHERE datname IS NOT NULL
+          GROUP BY datname, username, cmd_type_text
+
+      # Summary metrics by command type
+      - metric_name: pg_stat_monitor_unique_queries
+        type: gauge
+        help: 'Number of unique queries by command type'
+        key_labels:
+          - command_type
+        values: [unique_queries]
+        query: |
+          SELECT
+            cmd_type_text as command_type,
+            COUNT(DISTINCT pgsm_query_id) as unique_queries
+          FROM pg_stat_monitor
+          WHERE cmd_type_text IS NOT NULL
+          GROUP BY cmd_type_text
+
+      - metric_name: pg_stat_monitor_summary_calls_total
+        type: counter
+        help: 'Total number of query executions by command type'
+        key_labels:
+          - command_type
+        values: [total_calls]
+        query: |
+          SELECT
+            cmd_type_text as command_type,
+            SUM(calls) as total_calls
+          FROM pg_stat_monitor
+          WHERE cmd_type_text IS NOT NULL
+          GROUP BY cmd_type_text
+
+      - metric_name: pg_stat_monitor_summary_time_milliseconds_total
+        type: counter
+        help: 'Total execution time in milliseconds by command type'
+        key_labels:
+          - command_type
+        values: [total_time_ms]
+        query: |
+          SELECT
+            cmd_type_text as command_type,
+            SUM(total_exec_time) as total_time_ms
+          FROM pg_stat_monitor
+          WHERE cmd_type_text IS NOT NULL
+          GROUP BY cmd_type_text
+
+      - metric_name: pg_stat_monitor_summary_avg_time_milliseconds
+        type: gauge
+        help: 'Average execution time in milliseconds by command type'
+        key_labels:
+          - command_type
+        values: [avg_time_ms]
+        query: |
+          SELECT
+            cmd_type_text as command_type,
+            AVG(mean_exec_time) as avg_time_ms
+          FROM pg_stat_monitor
+          WHERE cmd_type_text IS NOT NULL
+          GROUP BY cmd_type_text
+
+      - metric_name: pg_stat_monitor_summary_rows_total
+        type: counter
+        help: 'Total rows affected by command type'
+        key_labels:
+          - command_type
+        values: [total_rows]
+        query: |
+          SELECT
+            cmd_type_text as command_type,
+            SUM(rows) as total_rows
+          FROM pg_stat_monitor
+          WHERE cmd_type_text IS NOT NULL
+          GROUP BY cmd_type_text
+
+      - metric_name: pg_stat_monitor_summary_cache_hits_total
+        type: counter
+        help: 'Total cache hits by command type'
+        key_labels:
+          - command_type
+        values: [cache_hits]
+        query: |
+          SELECT
+            cmd_type_text as command_type,
+            SUM(shared_blks_hit) as cache_hits
+          FROM pg_stat_monitor
+          WHERE cmd_type_text IS NOT NULL
+          GROUP BY cmd_type_text
+
+      - metric_name: pg_stat_monitor_summary_disk_reads_total
+        type: counter
+        help: 'Total disk reads by command type'
+        key_labels:
+          - command_type
+        values: [disk_reads]
+        query: |
+          SELECT
+            cmd_type_text as command_type,
+            SUM(shared_blks_read) as disk_reads
+          FROM pg_stat_monitor
+          WHERE cmd_type_text IS NOT NULL
+          GROUP BY cmd_type_text
+
+      # Overall cache hit ratio
+      - metric_name: pg_stat_monitor_cache_hit_ratio_percent
+        type: gauge
+        help: 'Overall cache hit ratio percentage'
+        values: [cache_hit_ratio_percent]
+        query: |
+          SELECT
+            ROUND(
+              CASE
+                WHEN (SUM(shared_blks_hit) + SUM(shared_blks_read)) > 0
+                THEN (SUM(shared_blks_hit)::numeric / (SUM(shared_blks_hit) + SUM(shared_blks_read)) * 100)
+                ELSE 0
+              END, 2
+            ) as cache_hit_ratio_percent
+          FROM pg_stat_monitor

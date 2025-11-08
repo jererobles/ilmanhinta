@@ -3,6 +3,7 @@
 import polars as pl
 
 from ilmanhinta.logging import logfire
+from ilmanhinta.processing.holiday_features import add_holiday_features
 
 
 class FeatureEngineer:
@@ -147,6 +148,7 @@ class FeatureEngineer:
         logfire.info(f"Creating features from {len(df)} records")
 
         df = FeatureEngineer.add_time_features(df)
+        df = add_holiday_features(df, time_col="timestamp")
         df = FeatureEngineer.add_lag_features(df, target_col)
         df = FeatureEngineer.add_rolling_features(df, target_col)
         df = FeatureEngineer.add_weather_interactions(df)

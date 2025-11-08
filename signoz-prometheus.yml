@@ -3,7 +3,6 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: 'ilmanhinta-api'
+  - job_name: 'signoz-query-service'
     static_configs:
-      - targets: ['api:8000']
-    metrics_path: '/metrics'
+      - targets: ['localhost:8080']

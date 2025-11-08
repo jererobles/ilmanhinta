@@ -20,10 +20,8 @@ from ilmanhinta.clients.fmi import FMIClient
 from ilmanhinta.db.postgres_client import PostgresClient
 from ilmanhinta.db.prediction_store import get_prediction_status, store_predictions
 from ilmanhinta.logging import logfire
-from ilmanhinta.ml.ensemble import EnsemblePredictor
 from ilmanhinta.ml.model import ConsumptionModel
 from ilmanhinta.ml.predict import Predictor
-from ilmanhinta.ml.prophet_model import ProphetConsumptionModel
 from ilmanhinta.processing.features import FeatureEngineer
 from ilmanhinta.processing.joins import TemporalJoiner
 
@@ -175,78 +173,6 @@ def trained_lightgbm_model(context: AssetExecutionContext) -> Path:
     return output_path
 
 
-@asset(deps=[processed_training_data])
-def trained_prophet_model(context: AssetExecutionContext) -> Path:
-    """Train Prophet model for seasonal forecasting."""
-    logfire.info("Training Prophet seasonal forecasting model")
-    from datetime import timedelta
-
-    # Query raw data from PostgreSQL for Prophet (needs timestamp + target)
-    db = PostgresClient()
-    end_time = datetime.now(UTC)
-    start_time = end_time - timedelta(days=30)
-
-    # Get joined data for Prophet
-    training_df = db.get_joined_training_data(start_time, end_time)
-    db.close()
-
-    # Prophet can use weather as regressors
-    weather_features = ["temperature", "humidity", "wind_speed", "pressure"]
-
-    # Train Prophet model
-    model = ProphetConsumptionModel()
-    metrics = model.train(training_df, weather_features=weather_features)
-
-    context.log.info(f"Prophet training complete: {metrics}")
-
-    # Save model
-    output_path = DATA_DIR / "models" / f"prophet_{model.model_version}.pkl"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    model.save(output_path)
-
-    # Also save as "latest"
-    latest_path = DATA_DIR / "models" / "prophet_latest.pkl"
-    model.save(latest_path)
-
-    context.log.info(f"Prophet model saved to {output_path}")
-    return output_path
-
-
-@asset(deps=[trained_lightgbm_model, trained_prophet_model])
-def trained_ensemble_model(context: AssetExecutionContext) -> Path:
-    """Create ensemble model combining Prophet + LightGBM."""
-    logfire.info("Creating ensemble model")
-
-    # Load both models
-    lightgbm_path = DATA_DIR / "models" / "lightgbm_latest.pkl"
-    prophet_path = DATA_DIR / "models" / "prophet_latest.pkl"
-
-    if not lightgbm_path.exists() or not prophet_path.exists():
-        raise ValueError("Required models not found for ensemble")
-
-    ensemble = EnsemblePredictor.load_from_paths(
-        prophet_path=prophet_path,
-        lightgbm_path=lightgbm_path,
-        prophet_weight=0.4,  # 40% Prophet, 60% LightGBM
-    )
-
-    # Save ensemble metadata
-    output_path = DATA_DIR / "models" / "ensemble_latest.txt"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    output_path.write_text(
-        f"Ensemble Model\n"
-        f"Prophet: {prophet_path}\n"
-        f"LightGBM: {lightgbm_path}\n"
-        f"Prophet weight: 0.4\n"
-        f"LightGBM weight: 0.6\n"
-    )
-
-    context.log.info(f"Ensemble model created: {output_path}")
-    return output_path
-
-
 @asset(deps=[trained_lightgbm_model])
 def hourly_forecast_predictions(context: AssetExecutionContext) -> int:
     """Generate the next 24-hour forecast and persist it for the API."""
@@ -290,8 +216,6 @@ train_job = define_asset_job(
         fmi_weather_data,
         processed_training_data,
         trained_lightgbm_model,
-        trained_prophet_model,
-        trained_ensemble_model,
     ],
 )
 
@@ -308,8 +232,6 @@ bootstrap_job = define_asset_job(
         fmi_weather_data,
         processed_training_data,
         trained_lightgbm_model,
-        trained_prophet_model,
-        trained_ensemble_model,
         hourly_forecast_predictions,
     ],
 )
@@ -375,8 +297,6 @@ defs = Definitions(
         fmi_weather_data,
         processed_training_data,
         trained_lightgbm_model,
-        trained_prophet_model,
-        trained_ensemble_model,
         hourly_forecast_predictions,
     ],
     jobs=[ingest_job, train_job, forecast_job, bootstrap_job],

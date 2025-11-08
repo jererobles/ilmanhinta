@@ -2,7 +2,7 @@
 
 import os
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
@@ -15,6 +15,7 @@ from ilmanhinta.logging import logfire
 from ilmanhinta.models.fmi import PredictionOutput
 
 from .analytics import router as analytics_router
+from .comparison import router as comparison_router
 from .metrics import (
     api_request_duration_seconds,
     api_requests_total,
@@ -25,16 +26,18 @@ from .metrics import (
 
 # Initialize FastAPI
 app = FastAPI(
-    title="Ilmanhinta - Finnish Energy Consumption Prediction",
-    description="API for predicting electricity consumption based on weather data",
-    version="0.2.0",  # Bumped version for TimescaleDB migration
+    title="Ilmanhinta - Finnish Energy Prediction & Price Forecasting",
+    description="API for predicting electricity consumption and prices based on weather data and market forecasts. "
+    "Includes comparison framework for ML predictions vs Fingrid forecasts.",
+    version="0.3.0",  # Bumped version for price prediction + comparison API
 )
 
 # Instrument FastAPI with Logfire for automatic tracing
 logfire.instrument_fastapi(app)
 
-# Include analytics router
+# Include routers
 app.include_router(analytics_router)
+app.include_router(comparison_router)  # NEW: Price prediction comparison API
 
 DEFAULT_MODEL_TYPE = os.getenv("PREDICTION_MODEL_TYPE", "lightgbm")
 

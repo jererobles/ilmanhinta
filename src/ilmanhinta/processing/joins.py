@@ -185,14 +185,17 @@ class TemporalJoiner:
         if df.is_empty():
             return df
 
+        # Determine which time column is present (handle both 'time' and 'timestamp')
+        time_col = "time" if "time" in df.columns else "timestamp"
+
         # Floor timestamps to the start of the hour to avoid spilling into the next hour
-        df = df.with_columns(pl.col("timestamp").dt.truncate("1h").alias("timestamp_hourly"))
+        df = df.with_columns(pl.col(time_col).dt.truncate("1h").alias("timestamp_hourly"))
 
         # Group by hourly timestamp and aggregate
         numeric_cols = [
             col
             for col in df.columns
-            if col not in ["timestamp", "timestamp_hourly"] and df[col].dtype.is_numeric()
+            if col not in [time_col, "timestamp_hourly"] and df[col].dtype.is_numeric()
         ]
 
         agg_exprs = [pl.col(col).mean().alias(col) for col in numeric_cols]
