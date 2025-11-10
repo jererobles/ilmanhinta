@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import polars as pl
@@ -170,15 +170,14 @@ class PostgresClient:
         pdf["price_type"] = price_type
         pdf["source"] = source
 
-        with self.session() as session:
-            rows_affected = pdf.to_sql(
-                "electricity_prices",
-                con=self.engine,
-                if_exists="append",
-                index=False,
-                method="multi",
-            )
-            return len(pdf)
+        pdf.to_sql(
+            "electricity_prices",
+            con=self.engine,
+            if_exists="append",
+            index=False,
+            method="multi",
+        )
+        return len(pdf)
 
     def insert_weather(self, df: pl.DataFrame, station_id: str) -> int:
         """Insert weather observations from Polars DataFrame.
@@ -281,15 +280,14 @@ class PostgresClient:
         pdf["forecast_model"] = forecast_model
         pdf["generated_at"] = generated_at or datetime.now(UTC)
 
-        with self.session() as session:
-            rows_affected = pdf.to_sql(
-                "weather_forecasts",
-                con=self.engine,
-                if_exists="append",
-                index=False,
-                method="multi",
-            )
-            return len(pdf)
+        pdf.to_sql(
+            "weather_forecasts",
+            con=self.engine,
+            if_exists="append",
+            index=False,
+            method="multi",
+        )
+        return len(pdf)
 
     def insert_fingrid_forecast(
         self,
@@ -324,15 +322,14 @@ class PostgresClient:
             pdf["update_frequency"] = update_frequency
         pdf["generated_at"] = generated_at or datetime.now(UTC)
 
-        with self.session() as session:
-            rows_affected = pdf.to_sql(
-                "fingrid_forecasts",
-                con=self.engine,
-                if_exists="append",
-                index=False,
-                method="multi",
-            )
-            return len(pdf)
+        pdf.to_sql(
+            "fingrid_forecasts",
+            con=self.engine,
+            if_exists="append",
+            index=False,
+            method="multi",
+        )
+        return len(pdf)
 
     def insert_predictions(
         self,
@@ -377,15 +374,14 @@ class PostgresClient:
         if training_end_date:
             pdf["training_end_date"] = training_end_date
 
-        with self.session() as session:
-            rows_affected = pdf.to_sql(
-                "model_predictions",
-                con=self.engine,
-                if_exists="append",
-                index=False,
-                method="multi",
-            )
-            return len(pdf)
+        pdf.to_sql(
+            "model_predictions",
+            con=self.engine,
+            if_exists="append",
+            index=False,
+            method="multi",
+        )
+        return len(pdf)
 
     def get_consumption(
         self,

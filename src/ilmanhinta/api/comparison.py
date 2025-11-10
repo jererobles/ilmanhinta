@@ -500,7 +500,7 @@ async def refresh_comparison_views() -> dict[str, str]:
 
     except Exception as e:
         logfire.error(f"Error refreshing views: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to refresh views: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to refresh views: {str(e)}") from e
 
     finally:
         db.close()

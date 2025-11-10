@@ -29,12 +29,11 @@ def test_postgres_connection() -> bool:
     print("\n🔍 Testing PostgreSQL connection...")
     try:
         url = os.getenv("DATABASE_URL", "postgresql://api:hunter2@localhost:5432/ilmanhinta")
-        with psycopg.connect(url) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT version()")
-                version = cur.fetchone()[0]
-                print(f"✅ Connected to PostgreSQL: {version[:50]}...")
-                return True
+        with psycopg.connect(url) as conn, conn.cursor() as cur:
+            cur.execute("SELECT version()")
+            version = cur.fetchone()[0]
+            print(f"✅ Connected to PostgreSQL: {version[:50]}...")
+            return True
     except Exception as e:
         print(f"❌ PostgreSQL connection failed: {e}")
         return False
@@ -45,16 +44,15 @@ def test_timescaledb_extension() -> bool:
     print("\n🔍 Testing TimescaleDB extension...")
     try:
         url = os.getenv("DATABASE_URL", "postgresql://api:hunter2@localhost:5432/ilmanhinta")
-        with psycopg.connect(url) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'")
-                version = cur.fetchone()
-                if version:
-                    print(f"✅ TimescaleDB extension installed: version {version[0]}")
-                    return True
-                else:
-                    print("❌ TimescaleDB extension not found")
-                    return False
+        with psycopg.connect(url) as conn, conn.cursor() as cur:
+            cur.execute("SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'")
+            version = cur.fetchone()
+            if version:
+                print(f"✅ TimescaleDB extension installed: version {version[0]}")
+                return True
+            else:
+                print("❌ TimescaleDB extension not found")
+                return False
     except Exception as e:
         print(f"❌ TimescaleDB check failed: {e}")
         return False
@@ -65,24 +63,23 @@ def test_hypertables() -> bool:
     print("\n🔍 Testing hypertables...")
     try:
         url = os.getenv("DATABASE_URL", "postgresql://api:hunter2@localhost:5432/ilmanhinta")
-        with psycopg.connect(url) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
+        with psycopg.connect(url) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
                     SELECT hypertable_name
                     FROM timescaledb_information.hypertables
                     ORDER BY hypertable_name
                 """
-                )
-                tables = cur.fetchall()
-                if tables:
-                    print(f"✅ Found {len(tables)} hypertables:")
-                    for table in tables:
-                        print(f"   - {table[0]}")
-                    return True
-                else:
-                    print("❌ No hypertables found")
-                    return False
+            )
+            tables = cur.fetchall()
+            if tables:
+                print(f"✅ Found {len(tables)} hypertables:")
+                for table in tables:
+                    print(f"   - {table[0]}")
+                return True
+            else:
+                print("❌ No hypertables found")
+                return False
     except Exception as e:
         print(f"❌ Hypertable check failed: {e}")
         return False
@@ -93,24 +90,23 @@ def test_continuous_aggregates() -> bool:
     print("\n🔍 Testing continuous aggregates...")
     try:
         url = os.getenv("DATABASE_URL", "postgresql://api:hunter2@localhost:5432/ilmanhinta")
-        with psycopg.connect(url) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
+        with psycopg.connect(url) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
                     SELECT view_name
                     FROM timescaledb_information.continuous_aggregates
                     ORDER BY view_name
                 """
-                )
-                views = cur.fetchall()
-                if views:
-                    print(f"✅ Found {len(views)} continuous aggregates:")
-                    for view in views:
-                        print(f"   - {view[0]}")
-                    return True
-                else:
-                    print("⚠️  No continuous aggregates found (will be created on first use)")
-                    return True  # Not a failure, just not materialized yet
+            )
+            views = cur.fetchall()
+            if views:
+                print(f"✅ Found {len(views)} continuous aggregates:")
+                for view in views:
+                    print(f"   - {view[0]}")
+                return True
+            else:
+                print("⚠️  No continuous aggregates found (will be created on first use)")
+                return True  # Not a failure, just not materialized yet
     except Exception as e:
         print(f"❌ Continuous aggregate check failed: {e}")
         return False
@@ -121,25 +117,24 @@ def test_compression() -> bool:
     print("\n🔍 Testing compression configuration...")
     try:
         url = os.getenv("DATABASE_URL", "postgresql://api:hunter2@localhost:5432/ilmanhinta")
-        with psycopg.connect(url) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
+        with psycopg.connect(url) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
                     SELECT hypertable_name, compression_enabled
                     FROM timescaledb_information.compression_settings
                     WHERE compression_enabled = true
                     ORDER BY hypertable_name
                 """
-                )
-                tables = cur.fetchall()
-                if tables:
-                    print(f"✅ Compression enabled on {len(tables)} hypertables:")
-                    for table in tables:
-                        print(f"   - {table[0]}")
-                    return True
-                else:
-                    print("⚠️  No compression enabled yet (normal for new database)")
-                    return True
+            )
+            tables = cur.fetchall()
+            if tables:
+                print(f"✅ Compression enabled on {len(tables)} hypertables:")
+                for table in tables:
+                    print(f"   - {table[0]}")
+                return True
+            else:
+                print("⚠️  No compression enabled yet (normal for new database)")
+                return True
     except Exception as e:
         print(f"❌ Compression check failed: {e}")
         return False
@@ -156,26 +151,25 @@ def test_schema() -> bool:
     ]
     try:
         url = os.getenv("DATABASE_URL", "postgresql://api:hunter2@localhost:5432/ilmanhinta")
-        with psycopg.connect(url) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
+        with psycopg.connect(url) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
                     SELECT tablename FROM pg_tables
                     WHERE schemaname = 'public'
                     ORDER BY tablename
                 """
-                )
-                existing_tables = [row[0] for row in cur.fetchall()]
+            )
+            existing_tables = [row[0] for row in cur.fetchall()]
 
-                missing = [t for t in required_tables if t not in existing_tables]
-                if missing:
-                    print(f"❌ Missing tables: {', '.join(missing)}")
-                    return False
-                else:
-                    print("✅ All required tables exist:")
-                    for table in required_tables:
-                        print(f"   - {table}")
-                    return True
+            missing = [t for t in required_tables if t not in existing_tables]
+            if missing:
+                print(f"❌ Missing tables: {', '.join(missing)}")
+                return False
+            else:
+                print("✅ All required tables exist:")
+                for table in required_tables:
+                    print(f"   - {table}")
+                return True
     except Exception as e:
         print(f"❌ Schema check failed: {e}")
         return False
