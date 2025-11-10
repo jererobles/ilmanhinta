@@ -1,43 +1,30 @@
-# Multi-stage build with uv for modern Python packaging
-FROM python:3.11-slim AS builder
-
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
-# Set working directory
-WORKDIR /app
-
-# Copy dependency files
-COPY pyproject.toml ./
-
-# Install dependencies using uv (much faster than pip)
-RUN uv pip install --system -r pyproject.toml
-
-# Production stage
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy Python packages from builder
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy application code
-COPY src/ilmanhinta ./ilmanhinta
+# Install uv for faster package management
+RUN pip install uv
 
-# Create data directories
-RUN mkdir -p /app/data/{raw,processed,models} /app/dagster_home
+# Copy project files needed for installation (for layer caching)
+COPY pyproject.toml README.md ./
 
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
+# Copy source code (needed for editable install)
+COPY src/ /app/src/
+
+# Install package with dependencies using uv
+RUN uv pip install --system -e .
+
+# Create dagster home directory
+RUN mkdir -p /opt/dagster/dagster_home
+
 ENV PYTHONPATH=/app
-ENV DAGSTER_HOME=/app/dagster_home
+ENV DAGSTER_HOME=/opt/dagster/dagster_home
 
-# Expose ports
 EXPOSE 8000 3000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD python -c "import httpx; httpx.get('http://localhost:8000/health')"
-
-# Default command (can be overridden)
-CMD ["python", "-m", "uvicorn", "ilmanhinta.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

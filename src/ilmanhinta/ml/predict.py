@@ -3,10 +3,10 @@
 from pathlib import Path
 
 import polars as pl
-from loguru import logger
 
 from ilmanhinta.clients.fingrid import FingridClient
 from ilmanhinta.clients.fmi import FMIClient
+from ilmanhinta.logging import logfire
 from ilmanhinta.ml.model import ConsumptionModel
 from ilmanhinta.models.fmi import PredictionOutput
 from ilmanhinta.processing.features import FeatureEngineer
@@ -28,27 +28,42 @@ class Predictor:
 
         Returns hourly predictions with confidence intervals.
         """
-        logger.info("Generating 24-hour consumption forecast")
+        logfire.info("Generating 24-hour consumption forecast")
 
-        # 1. Fetch historical consumption (for lag features)
-        historical_consumption = await self.fingrid_client.fetch_realtime_consumption(hours=24 * 7)
-        consumption_df = TemporalJoiner.fingrid_to_polars(historical_consumption)
+        # 1. Fetch historical electricity data (consumption + production + wind + nuclear)
+        # This ensures we have ALL features that were used during training
+        historical_data = await self.fingrid_client.fetch_all_electricity_data(hours=24 * 7)
+        consumption_df = TemporalJoiner.merge_fingrid_datasets(historical_data)
 
         # 2. Fetch weather forecast
         weather_forecast = self.fmi_client.fetch_forecast(hours=24)
         forecast_df = TemporalJoiner.fmi_to_polars(weather_forecast.observations)
 
         if forecast_df.is_empty():
-            logger.error("No weather forecast available")
+            logfire.error("No weather forecast available")
             return []
+
+        # Rename weather columns to match model training features
+        # Note: Keep precipitation_mm as is since the model was trained with that name
+        weather_column_mapping = {
+            "temperature_c": "temperature",
+            "humidity_percent": "humidity",
+            "wind_speed_ms": "wind_speed",
+            "pressure_hpa": "pressure",
+            # precipitation_mm stays as precipitation_mm (model expects this name)
+        }
+        # Only rename columns that exist
+        rename_dict = {k: v for k, v in weather_column_mapping.items() if k in forecast_df.columns}
+        if rename_dict:
+            forecast_df = forecast_df.rename(rename_dict)
 
         # 3. Align to hourly resolution
         consumption_df = TemporalJoiner.align_to_hourly(consumption_df)
         forecast_df = TemporalJoiner.align_to_hourly(forecast_df)
 
         # Ensure both DataFrames share the same schema before vertical concatenation.
-        # consumption_df currently has columns: [timestamp, consumption_mw]
-        # forecast_df has weather columns: [temperature, humidity, wind_speed, wind_direction, pressure, precipitation, cloud_cover]
+        # consumption_df now has: [timestamp, consumption_mw, production_mw, wind_mw, nuclear_mw, net_import_mw]
+        # forecast_df has weather columns: [temperature, humidity, wind_speed, wind_direction, pressure, precipitation_mm, cloud_cover]
         # Add missing weather columns to consumption_df as nulls so we can vstack later.
         weather_cols = [
             "temperature",
@@ -56,7 +71,7 @@ class Predictor:
             "wind_speed",
             "wind_direction",
             "pressure",
-            "precipitation",
+            "precipitation_mm",
             "cloud_cover",
         ]
 
@@ -66,25 +81,56 @@ class Predictor:
                     pl.lit(None, dtype=pl.Float64).alias(col)
                 )
 
+        logfire.info(
+            f"Historical data columns: {consumption_df.columns} - includes all electricity features"
+        )
+
         # 4. For each forecast hour, create features using historical data
         predictions: list[PredictionOutput] = []
+
+        # Get the latest known values for electricity features to use in forecasts
+        latest_production = (
+            consumption_df.select("production_mw").tail(1)[0, 0]
+            if "production_mw" in consumption_df.columns
+            else None
+        )
+        latest_wind = (
+            consumption_df.select("wind_mw").tail(1)[0, 0]
+            if "wind_mw" in consumption_df.columns
+            else None
+        )
+        latest_nuclear = (
+            consumption_df.select("nuclear_mw").tail(1)[0, 0]
+            if "nuclear_mw" in consumption_df.columns
+            else None
+        )
+        latest_net_import = (
+            consumption_df.select("net_import_mw").tail(1)[0, 0]
+            if "net_import_mw" in consumption_df.columns
+            else None
+        )
 
         for i in range(len(forecast_df)):
             forecast_row = forecast_df[i]
             forecast_time = forecast_row["timestamp"][0]
 
             # Create a combined dataframe with history + current forecast point.
-            # The appended single-row frame must match consumption_df schema.
+            # For electricity features (production, wind, nuclear, net_import), use latest known values
+            # since we don't have forecasts for these (yet - could be added later)
             current_row = pl.DataFrame(
                 {
                     "timestamp": [forecast_time],
                     "consumption_mw": [None],  # This is what we're predicting
+                    "production_mw": [latest_production],  # Use latest known value
+                    "wind_mw": [latest_wind],  # Use latest known value
+                    "nuclear_mw": [latest_nuclear],  # Use latest known value
+                    "net_import_mw": [latest_net_import],  # Use latest known value
                     "temperature": [forecast_row["temperature"][0]],
                     "humidity": [forecast_row["humidity"][0]],
                     "wind_speed": [forecast_row["wind_speed"][0]],
                     "wind_direction": [forecast_row["wind_direction"][0]],
                     "pressure": [forecast_row["pressure"][0]],
-                    "precipitation": [forecast_row["precipitation"][0]],
+                    "precipitation_mm": [forecast_row["precipitation_mm"][0]],
                     "cloud_cover": [forecast_row["cloud_cover"][0]],
                 }
             )
@@ -115,17 +161,21 @@ class Predictor:
                     )
 
                 # Update consumption_df with the prediction for next iteration.
-                # Keep schema identical by adding weather columns as nulls for the appended row.
+                # Keep schema identical including electricity features and weather columns.
                 consumption_update_row = pl.DataFrame(
                     {
                         "timestamp": [forecast_time],
                         "consumption_mw": [float(row["predicted_consumption_mw"][0])],
+                        "production_mw": [latest_production],  # Keep using latest known value
+                        "wind_mw": [latest_wind],  # Keep using latest known value
+                        "nuclear_mw": [latest_nuclear],  # Keep using latest known value
+                        "net_import_mw": [latest_net_import],  # Keep using latest known value
                         "temperature": [None],
                         "humidity": [None],
                         "wind_speed": [None],
                         "wind_direction": [None],
                         "pressure": [None],
-                        "precipitation": [None],
+                        "precipitation_mm": [None],
                         "cloud_cover": [None],
                     }
                 )
@@ -134,7 +184,7 @@ class Predictor:
                     "timestamp"
                 )
 
-        logger.info(f"Generated {len(predictions)} hourly predictions")
+        logfire.info(f"Generated {len(predictions)} hourly predictions")
 
         return predictions
 
@@ -146,7 +196,7 @@ class Predictor:
             return None
 
         peak = max(predictions, key=lambda p: p.predicted_consumption_mw)
-        logger.info(
+        logfire.info(
             f"Peak consumption predicted at {peak.timestamp}: {peak.predicted_consumption_mw:.2f} MW"
         )
 

@@ -1,7 +1,9 @@
 """Feature engineering with sliding windows and time-based features."""
 
 import polars as pl
-from loguru import logger
+
+from ilmanhinta.logging import logfire
+from ilmanhinta.processing.holiday_features import add_holiday_features
 
 
 class FeatureEngineer:
@@ -23,7 +25,7 @@ class FeatureEngineer:
             ]
         )
 
-        logger.debug("Added time-based features")
+        logfire.debug("Added time-based features")
         return df
 
     @staticmethod
@@ -46,7 +48,7 @@ class FeatureEngineer:
 
         df = df.with_columns(lag_exprs)
 
-        logger.debug(f"Added lag features for {target_col}: {lags}")
+        logfire.debug(f"Added lag features for {target_col}: {lags}")
         return df
 
     @staticmethod
@@ -84,7 +86,7 @@ class FeatureEngineer:
 
         df = df.with_columns(rolling_exprs)
 
-        logger.debug(f"Added rolling window features for {target_col}: {windows}")
+        logfire.debug(f"Added rolling window features for {target_col}: {windows}")
         return df
 
     @staticmethod
@@ -124,7 +126,7 @@ class FeatureEngineer:
                 ).alias("wind_chill")
             )
 
-        logger.debug("Added weather interaction features")
+        logfire.debug("Added weather interaction features")
         return df
 
     @staticmethod
@@ -143,26 +145,33 @@ class FeatureEngineer:
           inference where the target is unknown for the forecast row, set to
           False and handle row selection downstream.
         """
-        logger.info(f"Creating features from {len(df)} records")
+        logfire.info(f"Creating features from {len(df)} records")
 
         df = FeatureEngineer.add_time_features(df)
+        df = add_holiday_features(df, time_col="timestamp")
         df = FeatureEngineer.add_lag_features(df, target_col)
         df = FeatureEngineer.add_rolling_features(df, target_col)
         df = FeatureEngineer.add_weather_interactions(df)
 
-        # Optionally drop rows with NaN values (from lags/rolling windows)
+        # Drop rows with nulls in critical columns only
+        # (lag/rolling features will have nulls in first N rows - that's expected)
         if drop_nulls:
             initial_count = len(df)
-            df = df.drop_nulls()
+
+            # Only drop if target or essential weather features are null
+            critical_cols = [target_col, "temperature", "humidity", "wind_speed", "pressure"]
+            existing_critical = [col for col in critical_cols if col in df.columns]
+
+            df = df.drop_nulls(subset=existing_critical)
             final_count = len(df)
 
             if initial_count > final_count:
-                logger.info(
-                    f"Dropped {initial_count - final_count} rows with missing values "
-                    f"(from lag/rolling features)"
+                logfire.info(
+                    f"Dropped {initial_count - final_count} rows with missing critical values "
+                    f"(target or weather features)"
                 )
 
-        logger.info(
+        logfire.info(
             f"Feature engineering complete: {len(df)} records with {len(df.columns)} features"
         )
 

@@ -1,0 +1,140 @@
+include:
+  - path: ./signoz/deploy/docker/docker-compose.yaml
+    env_file: ./signoz/deploy/docker/.env
+
+x-common-env: &common-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    env_file:
+      - .env
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=timescaledb,pg_stat_monitor
+      - -c
+      - log_statement=none
+      - -c
+      - log_min_duration_statement=-1
+      - -c
+      - log_connections=off
+      - -c
+      - log_disconnections=off
+      - -c
+      - log_checkpoints=off
+      - -c
+      - client_min_messages=warning
+      - -c
+      - log_min_messages=warning
+      - -c
+      - "log_line_prefix=%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_timescaledb_enhanced.sql:/docker-entrypoint-initdb.d/01_init.sql
+      - ./init.sql:/docker-entrypoint-initdb.d/02_init_legacy.sql
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U api -d ilmanhinta"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - default
+
+  dagster-daemon:
+    build: .
+    command: dagster-daemon run
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+      DATA_DIR: /data
+      OTEL_SERVICE_NAME: ilmanhinta-dagster-daemon
+    volumes:
+      - ./src:/app/src
+      - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml
+      - dagster_storage:/opt/dagster/dagster_home/storage
+      - pipeline_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - default
+
+  dagster-webserver:
+    build: .
+    command: dagster-webserver -h 0.0.0.0 -p 3000
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+      OTEL_SERVICE_NAME: ilmanhinta-dagster-webserver
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./src:/app/src
+      - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml
+      - dagster_storage:/opt/dagster/dagster_home/storage
+    depends_on:
+      - dagster-daemon
+    restart: unless-stopped
+    networks:
+      - default
+
+  api:
+    build: .
+    command: uvicorn ilmanhinta.api.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+      OTEL_SERVICE_NAME: ilmanhinta-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    labels:
+      - "prometheus.scrape=true"
+      - "prometheus.port=8000"
+      - "prometheus.path=/metrics"
+    networks:
+      - default
+
+  sql-exporter:
+    image: burningalchemist/sql_exporter:latest
+    command: ["--config.file=/config.yml"]
+    environment:
+      SQLEXPORTER_TARGET_DSN: "postgresql://api:${POSTGRES_PASSWORD}@postgres:5432/ilmanhinta?sslmode=disable"
+    volumes:
+      - ./sql_exporter.yml:/config.yml:ro
+    ports:
+      - "9399:9399"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - default
+
+# Connect our services to both our network and SigNoz network
+# signoz-net is defined in the included SigNoz compose file
+networks:
+  default:
+    name: ilmanhinta_default
+
+volumes:
+  postgres_data:
+  dagster_storage:
+  pipeline_data:

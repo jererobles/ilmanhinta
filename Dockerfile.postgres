@@ -1,0 +1,20 @@
+# Custom PostgreSQL image with TimescaleDB, timescaledb-toolkit, and pg_stat_monitor
+# Using Ubuntu-based HA image which includes TimescaleDB Toolkit pre-installed
+FROM timescale/timescaledb-ha:pg17
+
+# Install pg_stat_monitor from Percona repository (compatible with PG17)
+USER root
+RUN apt-get update && apt-get install -y wget gnupg2 lsb-release curl && \
+    wget https://repo.percona.com/apt/percona-release_latest.generic_all.deb && \
+    dpkg -i percona-release_latest.generic_all.deb && \
+    rm percona-release_latest.generic_all.deb && \
+    percona-release setup ppg-17 && \
+    apt-get update && \
+    apt-get install -y percona-pg-stat-monitor17 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Switch back to postgres user
+USER postgres
+
+# NOTE: timescaledb-toolkit is included in the timescaledb-ha:pg17 image
+# shared_preload_libraries is set in docker-compose.yml command section

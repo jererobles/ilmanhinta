@@ -1,0 +1,2 @@
+# This directory is for PostgreSQL database backups
+# Backup files (*.sql) should not be committed to git

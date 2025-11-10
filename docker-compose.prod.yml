@@ -1,0 +1,126 @@
+version: '3.8'
+
+# Production overrides for docker-compose.yml
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  postgres:
+    environment:
+      POSTGRES_USER: ${DB_USER:-api}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:-ilmanhinta}
+    restart: always
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./backups:/backups  # For database backups
+
+  dagster-daemon:
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DATABASE_URL: postgresql://${DB_USER:-api}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-ilmanhinta}
+      DATA_DIR: /data
+      FINGRID_API_KEY: ${FINGRID_API_KEY}
+      FMI_API_KEY: ${FMI_API_KEY}
+      LOGFIRE_TOKEN: ${LOGFIRE_TOKEN}
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  dagster-webserver:
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DATABASE_URL: postgresql://${DB_USER:-api}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-ilmanhinta}
+      DAGSTER_WEBSERVER_HOST: 0.0.0.0
+      DAGSTER_WEBSERVER_PORT: 3000
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --workers 4
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-api}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-ilmanhinta}
+      LOGFIRE_TOKEN: ${LOGFIRE_TOKEN}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://prometheus:9090
+      API_CORS_ORIGINS: ${API_CORS_ORIGINS:-*}
+      API_RATE_LIMIT: ${API_RATE_LIMIT:-100}
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  prometheus:
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3001}
+      GF_INSTALL_PLUGINS: grafana-piechart-panel,grafana-worldmap-panel
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Backup service
+  postgres-backup:
+    image: prodrigestivill/postgres-backup-local:latest
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${DB_NAME:-ilmanhinta}
+      POSTGRES_USER: ${DB_USER:-api}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      SCHEDULE: "@daily"
+      BACKUP_KEEP_DAYS: 7
+      BACKUP_KEEP_WEEKS: 4
+      BACKUP_KEEP_MONTHS: 3
+      HEALTHCHECK_PORT: 8080
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      - postgres
+    restart: always
+
+volumes:
+  postgres_data:
+  dagster_storage:
+  pipeline_data:
+  prometheus_data:
+  grafana_data:
