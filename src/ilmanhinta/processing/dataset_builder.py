@@ -334,7 +334,7 @@ def split_train_test_temporal(
     test = df[split_idx:]
 
     logfire.info(
-        f"Split dataset: {len(train)} train, {len(test)} test " f"(test size: {test_size:.1%})"
+        f"Split dataset: {len(train)} train, {len(test)} test (test size: {test_size:.1%})"
     )
 
     return train, test

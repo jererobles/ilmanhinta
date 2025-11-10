@@ -1,4 +1,4 @@
-# Ilmanhinta
+# ⚡ Ilmanhinta
 
 Finnish electricity consumption prediction using weather data. Built with TimescaleDB and LightGBM.
 
@@ -163,3 +163,5 @@ Built this because I wanted accurate consumption forecasts for spot price optimi
 Originally planned an ensemble with Prophet for seasonality, but LightGBM alone with good feature engineering gets solid results. Might add Prophet later if seasonal patterns need better handling.
 
 TimescaleDB was chosen over vanilla Postgres because continuous aggregates make the analytics queries instant, and compression saves a ton of space on historical data.
+
+For deployments I explored serveral cloud-hosted services (Fly.io, Railway, Render) but in the end i opted for plain old `docker-compose.yaml` locally or on a VPS.
