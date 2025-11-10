@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 import polars as pl
 
+from ilmanhinta.config import settings
 from ilmanhinta.db.postgres_client import PostgresClient
 from ilmanhinta.logging import logfire
 from ilmanhinta.processing.price_features import PriceFeatureEngineer
@@ -171,9 +172,13 @@ class TrainingDatasetBuilder:
 class PredictionDatasetBuilder:
     """Build prediction datasets from forecasts."""
 
-    def __init__(self, db: PostgresClient | None = None):
+    DEFAULT_FORECAST_TYPES: tuple[str, ...] = ("consumption", "production", "wind")
+
+    def __init__(self, db: PostgresClient | None = None, station_id: str | None = None):
         """Initialize with database client."""
+
         self.db = db or PostgresClient()
+        self.station_id = station_id or settings.fmi_station_id
 
     def build(
         self,
@@ -218,66 +223,49 @@ class PredictionDatasetBuilder:
 
         return df
 
-    def _get_weather_forecasts(self, _start_time: datetime, _end_time: datetime) -> pl.DataFrame:
-        """Get weather forecasts from database."""
-        # This would query the weather_forecasts table
-        # For now, return a placeholder structure
+    def _get_weather_forecasts(self, start_time: datetime, end_time: datetime) -> pl.DataFrame:
+        """Get latest weather forecasts for the range from TimescaleDB."""
 
-        # In production, you'd query:
-        # SELECT forecast_time, temperature_c, wind_speed_ms, ...
-        # FROM weather_forecasts
-        # WHERE forecast_time >= _start_time AND forecast_time <= _end_time
-        # ORDER BY forecast_time
-
-        logfire.warning("weather_forecasts query not yet implemented - using placeholder")
-
-        # Placeholder: return empty DataFrame with expected columns
-        return pl.DataFrame(
-            {
-                "forecast_time": [],
-                "temperature": [],
-                "wind_speed": [],
-                "pressure": [],
-                "cloud_cover": [],
-                "humidity": [],
-            }
-        ).cast(
-            {
-                "forecast_time": pl.Datetime,
-                "temperature": pl.Float64,
-                "wind_speed": pl.Float64,
-                "pressure": pl.Float64,
-                "cloud_cover": pl.Float64,
-                "humidity": pl.Float64,
-            }
+        df = self.db.get_weather_forecasts(
+            start_time=start_time,
+            end_time=end_time,
+            station_id=self.station_id,
         )
 
-    def _get_fingrid_forecasts(self, _start_time: datetime, _end_time: datetime) -> pl.DataFrame:
+        if df.is_empty():
+            logfire.warning("No weather forecasts found between %s and %s", start_time, end_time)
+            return df
+
+        rename_map = {
+            "temperature_c": "temperature",
+            "wind_speed_ms": "wind_speed",
+            "humidity_percent": "humidity",
+            "pressure_hpa": "pressure",
+        }
+
+        available = {k: v for k, v in rename_map.items() if k in df.columns}
+        if available:
+            df = df.rename(available)
+
+        # Ensure Polars schema consistency and ordering
+        df = df.sort("forecast_time")
+        return df
+
+    def _get_fingrid_forecasts(self, start_time: datetime, end_time: datetime) -> pl.DataFrame:
         """Get Fingrid forecasts from database."""
-        # This would query the fingrid_forecasts table
-        # For now, return a placeholder
 
-        # In production:
-        # SELECT forecast_time, forecast_type, value
-        # FROM fingrid_forecasts
-        # WHERE forecast_time >= _start_time AND forecast_time <= _end_time
-        # ORDER BY forecast_time
-
-        logfire.warning("fingrid_forecasts query not yet implemented - using placeholder")
-
-        return pl.DataFrame(
-            {
-                "forecast_time": [],
-                "forecast_type": [],
-                "value": [],
-            }
-        ).cast(
-            {
-                "forecast_time": pl.Datetime,
-                "forecast_type": pl.Utf8,
-                "value": pl.Float64,
-            }
+        df = self.db.get_fingrid_forecasts(
+            start_time=start_time,
+            end_time=end_time,
+            forecast_types=self.DEFAULT_FORECAST_TYPES,
         )
+
+        if df.is_empty():
+            logfire.warning("No Fingrid forecasts found between %s and %s", start_time, end_time)
+        else:
+            df = df.sort("forecast_time")
+
+        return df
 
     def _pivot_fingrid_forecasts(self, df: pl.DataFrame) -> pl.DataFrame:
         """Pivot Fingrid forecasts from long to wide format.

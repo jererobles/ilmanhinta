@@ -7,7 +7,7 @@ production compatibility and concurrent access.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
@@ -382,6 +382,100 @@ class PostgresClient:
             method="multi",
         )
         return len(pdf)
+
+    def get_weather_forecasts(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        station_id: str | None = None,
+        forecast_model: str | None = None,
+    ) -> pl.DataFrame:
+        """Fetch weather forecasts for a time window.
+
+        Returns the latest forecast per (forecast_time, station_id).
+        """
+
+        query = """
+            SELECT DISTINCT ON (forecast_time, station_id)
+                forecast_time,
+                station_id,
+                station_name,
+                temperature_c,
+                wind_speed_ms,
+                wind_direction,
+                cloud_cover,
+                humidity_percent,
+                pressure_hpa,
+                precipitation_mm,
+                global_radiation_wm2,
+                forecast_model,
+                generated_at
+            FROM weather_forecasts
+            WHERE forecast_time >= :start_time AND forecast_time <= :end_time
+        """
+
+        params: dict[str, object] = {
+            "start_time": start_time,
+            "end_time": end_time,
+        }
+
+        if station_id:
+            query += " AND station_id = :station_id"
+            params["station_id"] = station_id
+
+        if forecast_model:
+            query += " AND forecast_model = :forecast_model"
+            params["forecast_model"] = forecast_model
+
+        query += " ORDER BY forecast_time, station_id, generated_at DESC"
+
+        with self.session() as session:
+            result = session.execute(text(query), params)
+            rows = result.fetchall()
+            if not rows:
+                return pl.DataFrame()
+            pdf = pd.DataFrame(rows, columns=result.keys())
+            return pl.from_pandas(pdf)
+
+    def get_fingrid_forecasts(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        forecast_types: Sequence[str] | None = None,
+    ) -> pl.DataFrame:
+        """Fetch Fingrid forecasts (latest per forecast_time + type)."""
+
+        query = """
+            SELECT DISTINCT ON (forecast_time, forecast_type)
+                forecast_time,
+                forecast_type,
+                value,
+                unit,
+                update_frequency,
+                generated_at
+            FROM fingrid_forecasts
+            WHERE forecast_time >= :start_time AND forecast_time <= :end_time
+        """
+
+        params: dict[str, object] = {
+            "start_time": start_time,
+            "end_time": end_time,
+        }
+
+        if forecast_types:
+            placeholders = ", ".join(f":forecast_type_{idx}" for idx in range(len(forecast_types)))
+            query += f" AND forecast_type IN ({placeholders})"
+            params.update({f"forecast_type_{idx}": ft for idx, ft in enumerate(forecast_types)})
+
+        query += " ORDER BY forecast_time, forecast_type, generated_at DESC"
+
+        with self.session() as session:
+            result = session.execute(text(query), params)
+            rows = result.fetchall()
+            if not rows:
+                return pl.DataFrame()
+            pdf = pd.DataFrame(rows, columns=result.keys())
+            return pl.from_pandas(pdf)
 
     def get_consumption(
         self,

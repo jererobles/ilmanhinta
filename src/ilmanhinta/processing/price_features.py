@@ -313,8 +313,8 @@ class PriceFeatureEngineer:
             return df
 
         if windows is None:
-            # Default: 24h, 7 days (168h)
-            windows = [24, 168]
+            # Default windows capture intraday + weekly trends
+            windows = [6, 12, 24, 168]
 
         rolling_exprs = []
         for window in windows:
@@ -338,6 +338,88 @@ class PriceFeatureEngineer:
         df = df.with_columns(rolling_exprs)
         logfire.debug(f"Added price rolling features: {windows}")
         return df
+
+    @staticmethod
+    def add_price_diff_features(
+        df: pl.DataFrame,
+        fast_lag: str = "price_lag_1h",
+        slower_lag: str = "price_lag_2h",
+        day_lag: str = "price_lag_24h",
+        week_lag: str = "price_lag_48h",
+    ) -> pl.DataFrame:
+        """Add price change features using existing lag columns."""
+
+        diff_exprs = []
+        if fast_lag in df.columns and slower_lag in df.columns:
+            diff_exprs.append((pl.col(fast_lag) - pl.col(slower_lag)).alias("price_diff_1h"))
+        if day_lag in df.columns and week_lag in df.columns:
+            diff_exprs.append((pl.col(day_lag) - pl.col(week_lag)).alias("price_diff_24h"))
+
+        if diff_exprs:
+            df = df.with_columns(diff_exprs)
+            logfire.debug("Added price diff features")
+
+        return df
+
+    @staticmethod
+    def add_price_history_features(
+        df: pl.DataFrame,
+        historical_prices: pl.DataFrame,
+        time_col: str = "forecast_time",
+    ) -> pl.DataFrame:
+        """Add lag/rolling/diff features derived from historical price data."""
+
+        if df.is_empty():
+            return df
+
+        if historical_prices.is_empty():
+            logfire.warning("No historical prices provided - skipping price lag features")
+            return df
+
+        required_cols = {"time", "price_eur_mwh"}
+        missing = required_cols - set(historical_prices.columns)
+        if missing:
+            logfire.warning("Missing columns %s in historical prices", sorted(missing))
+            return df
+
+        history = (
+            historical_prices.select(["time", "price_eur_mwh"])
+            .sort("time")
+            .unique(subset=["time"], keep="last")
+            .with_columns(pl.lit(False).alias("_is_forecast"))
+        )
+
+        forecast_stub = df.select(pl.col(time_col).alias("time")).with_columns(
+            [
+                pl.lit(True).alias("_is_forecast"),
+                pl.lit(None, dtype=pl.Float64).alias("price_eur_mwh"),
+            ]
+        )
+
+        combined = pl.concat([history, forecast_stub], how="diagonal").sort("time")
+        combined = PriceFeatureEngineer.add_price_lag_features(combined)
+        combined = PriceFeatureEngineer.add_price_rolling_features(combined)
+        combined = PriceFeatureEngineer.add_price_diff_features(combined)
+
+        feature_cols = [
+            col
+            for col in combined.columns
+            if col.startswith("price_lag_")
+            or col.startswith("price_rolling_")
+            or col.startswith("price_diff_")
+        ]
+
+        if not feature_cols:
+            logfire.warning("Price history features could not be generated")
+            return df
+
+        features_df = (
+            combined.filter(pl.col("_is_forecast"))
+            .select(["time", *feature_cols])
+            .rename({"time": time_col})
+        )
+
+        return df.join(features_df, on=time_col, how="left")
 
     @staticmethod
     def create_training_features(
@@ -368,6 +450,9 @@ class PriceFeatureEngineer:
 
         # 5. Price rolling statistics (volatility)
         df = PriceFeatureEngineer.add_price_rolling_features(df, price_col)
+
+        # 6. Price diffs (momentum signals)
+        df = PriceFeatureEngineer.add_price_diff_features(df)
 
         logfire.info(f"Training features complete: {len(df.columns)} columns")
         return df
@@ -403,30 +488,8 @@ class PriceFeatureEngineer:
         # 3. Consumption/production features (from Fingrid forecasts)
         df = PriceFeatureEngineer.add_consumption_production_features(df, mode="forecast")
 
-        # 4. Price lag features - JOIN with historical prices
-        if not historical_prices.is_empty():
-            # For each forecast time, find the last known prices
-            # This is tricky: we need to align forecast_time with historical time
-
-            # Rename forecast_time to time temporarily for joining
-            df = df.rename({time_col: "time"})
-
-            # Join with historical prices (asof join to get most recent)
-            # Sort both by time first
-            df = df.sort("time")
-            historical_prices = historical_prices.sort("time")
-
-            # Create lag features manually by looking back from each forecast time
-            # For production, you'd use asof_join, but for simplicity here we'll merge
-            # This is a placeholder - proper implementation would use:
-            # df.join_asof(historical_prices, on="time", strategy="backward")
-
-            # For now, just add price lag features if they exist in historical_prices
-            # In production, you'd properly align the historical data
-
-            df = df.rename({"time": time_col})
-        else:
-            logfire.warning("No historical prices provided - skipping price lag features")
+        # 4. Price lag/rolling features via historical prices
+        df = PriceFeatureEngineer.add_price_history_features(df, historical_prices, time_col)
 
         logfire.info(f"Prediction features complete: {len(df.columns)} columns")
         return df
