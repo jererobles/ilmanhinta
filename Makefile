@@ -1,6 +1,6 @@
 .PHONY: help install lint format test clean run-api run-dagster docker-build docker-run setup check-env ensure-dirs \
 	docker-up docker-up-full docker-down docker-restart docker-logs docker-ps docker-exec docker-shell docker-build-fresh \
-	db-migrate db-backup db-restore prod-up prod-down
+	db-migrate db-backup db-restore prod-up prod-down submodule-init submodule-update submodule-status
 
 SKIP_PRE_COMMIT_INSTALL ?= 0
 
@@ -34,6 +34,11 @@ help:
 	@echo "  make db-migrate    Run database migrations"
 	@echo "  make db-backup     Backup PostgreSQL database"
 	@echo "  make db-restore    Restore database from backup"
+	@echo ""
+	@echo "Submodule commands:"
+	@echo "  make submodule-init     Initialize submodules (first time)"
+	@echo "  make submodule-update   Update submodules to latest"
+	@echo "  make submodule-status   Show submodule status"
 
 install:
 	@echo "📦 Installing dependencies..."
@@ -45,7 +50,7 @@ install:
 	fi
 	@echo "✅ Installation complete"
 
-setup: ensure-dirs
+setup: ensure-dirs submodule-init
 	@echo "🛠  First-time project setup..."
 	@if [ ! -f .env ]; then \
 		cp .env.example .env && \
@@ -198,3 +203,18 @@ db-restore:
 	else \
 		echo "❌ Restore cancelled"; \
 	fi
+
+# ------------------- Git submodule management -------------------
+submodule-init:
+	@echo "🔗 Initializing git submodules..."
+	git submodule update --init --recursive
+	@echo "✅ Submodules initialized"
+
+submodule-update:
+	@echo "🔄 Updating git submodules to latest..."
+	git submodule update --remote --recursive
+	@echo "✅ Submodules updated"
+
+submodule-status:
+	@echo "📊 Git submodule status:"
+	@git submodule status

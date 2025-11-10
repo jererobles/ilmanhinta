@@ -3,8 +3,9 @@
 from logging.config import fileConfig
 
 from alembic import context
-from ilmanhinta.db.prediction_store import _get_database_url
 from sqlalchemy import create_engine, pool
+
+from ilmanhinta.db.prediction_store import _get_database_url
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
