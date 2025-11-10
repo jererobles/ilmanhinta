@@ -1,4 +1,4 @@
-# Ilmanhinta
+# ⚡ Ilmanhinta
 
 Finnish electricity consumption prediction using weather data. Built with TimescaleDB and LightGBM.
 
