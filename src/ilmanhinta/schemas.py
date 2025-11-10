@@ -253,9 +253,12 @@ class PredictionRow(BaseModel):
     @classmethod
     def validate_prediction_in_bounds(cls, v: float, info) -> float:
         """Ensure prediction is within confidence bounds if available."""
-        if "confidence_lower" in info.data and "confidence_upper" in info.data:
-            if not (info.data["confidence_lower"] <= v <= info.data["confidence_upper"]):
-                raise ValueError("predicted_consumption_mw should be within confidence bounds")
+        if (
+            "confidence_lower" in info.data
+            and "confidence_upper" in info.data
+            and not (info.data["confidence_lower"] <= v <= info.data["confidence_upper"])
+        ):
+            raise ValueError("predicted_consumption_mw should be within confidence bounds")
         return v
 
     class Config:

@@ -125,7 +125,7 @@ async def get_daily_accuracy(
             for row in rows
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}") from e
 
 
 @router.get("/models/comparison", response_model=list[ModelComparison])
@@ -177,7 +177,7 @@ async def compare_models() -> list[ModelComparison]:
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}") from e
 
 
 @router.get("/consumption/hourly", response_model=list[ConsumptionStats])
@@ -232,7 +232,7 @@ async def get_hourly_consumption(
             for row in rows
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}") from e
 
 
 @router.get("/summary")
@@ -293,4 +293,4 @@ async def get_analytics_summary() -> dict[str, Any]:
             ),
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}") from e

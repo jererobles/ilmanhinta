@@ -218,7 +218,7 @@ class PredictionDatasetBuilder:
 
         return df
 
-    def _get_weather_forecasts(self, start_time: datetime, end_time: datetime) -> pl.DataFrame:
+    def _get_weather_forecasts(self, _start_time: datetime, _end_time: datetime) -> pl.DataFrame:
         """Get weather forecasts from database."""
         # This would query the weather_forecasts table
         # For now, return a placeholder structure
@@ -226,7 +226,7 @@ class PredictionDatasetBuilder:
         # In production, you'd query:
         # SELECT forecast_time, temperature_c, wind_speed_ms, ...
         # FROM weather_forecasts
-        # WHERE forecast_time >= start_time AND forecast_time <= end_time
+        # WHERE forecast_time >= _start_time AND forecast_time <= _end_time
         # ORDER BY forecast_time
 
         logfire.warning("weather_forecasts query not yet implemented - using placeholder")
@@ -252,7 +252,7 @@ class PredictionDatasetBuilder:
             }
         )
 
-    def _get_fingrid_forecasts(self, start_time: datetime, end_time: datetime) -> pl.DataFrame:
+    def _get_fingrid_forecasts(self, _start_time: datetime, _end_time: datetime) -> pl.DataFrame:
         """Get Fingrid forecasts from database."""
         # This would query the fingrid_forecasts table
         # For now, return a placeholder
@@ -260,7 +260,7 @@ class PredictionDatasetBuilder:
         # In production:
         # SELECT forecast_time, forecast_type, value
         # FROM fingrid_forecasts
-        # WHERE forecast_time >= start_time AND forecast_time <= end_time
+        # WHERE forecast_time >= _start_time AND forecast_time <= _end_time
         # ORDER BY forecast_time
 
         logfire.warning("fingrid_forecasts query not yet implemented - using placeholder")
