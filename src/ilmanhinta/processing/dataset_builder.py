@@ -140,7 +140,7 @@ class TrainingDatasetBuilder:
             return df
 
         # Take first station if multiple (could be improved to aggregate)
-        df = df.filter(pl.col("station_id") == df.select("station_id").first().item())
+        df = df.filter(pl.col("station_id") == df["station_id"][0])
 
         # Aggregate columns that exist
         agg_exprs = []
@@ -295,7 +295,7 @@ class PredictionDatasetBuilder:
             return df
 
         # Pivot using polars
-        df_pivot = df.pivot(index="forecast_time", columns="forecast_type", values="value")
+        df_pivot = df.pivot(on="forecast_type", index="forecast_time", values="value")
 
         # Rename columns to match expected format
         rename_map = {
