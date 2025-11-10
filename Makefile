@@ -19,8 +19,8 @@ help:
 	@echo "  make check-env     Validate required env vars"
 	@echo ""
 	@echo "Docker Compose commands:"
-	@echo "  make docker-up          Start with lightweight observability (OTEL only)"
-	@echo "  make docker-up-full     Start with full SigNoz stack (ClickHouse + UI)"
+	@echo "  make docker-up          Start lite mode (console logs only)"
+	@echo "  make docker-up-full     Start full SigNoz stack (ClickHouse + UI)"
 	@echo "  make docker-down        Stop all Docker Compose services"
 	@echo "  make docker-restart     Restart all services"
 	@echo "  make docker-logs        Tail logs from all services"
@@ -108,31 +108,34 @@ check-env:
 
 # ------------------- Docker Compose commands -------------------
 docker-up:
-	@echo "🐳 Starting Docker Compose services (lightweight observability)..."
-	docker-compose up -d
+	@echo "🐳 Starting Docker Compose services (lite mode, console logs only)..."
+	@echo "📋 Stopping signoz profile first (if running)..."
+	docker-compose --profile signoz down 2>/dev/null || true
+	docker-compose --profile lite up -d
 	@echo "✅ Services started. Check status with 'make docker-ps'"
 	@echo ""
 	@echo "🌐 Access points:"
 	@echo "   API: http://localhost:8000"
 	@echo "   Dagster: http://localhost:3000"
-	@echo "   OTEL Collector metrics: http://localhost:8889/metrics (real-time)"
 	@echo ""
 	@echo "💡 For persistent storage + SigNoz UI:"
 	@echo "   make docker-up-full"
 
 docker-up-full:
 	@echo "🔍 Starting with full SigNoz observability stack..."
-	OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector-signoz:4318 docker-compose --profile signoz up -d
+	@echo "📋 Stopping lite profile first..."
+	docker-compose --profile lite down
+	@echo "🚀 Starting SigNoz profile..."
+	docker-compose --profile signoz up -d
 	@echo ""
 	@echo "✅ Full SigNoz stack running:"
 	@echo "   API: http://localhost:8000"
 	@echo "   Dagster: http://localhost:3000"
-	@echo "   OTEL Collector metrics: http://localhost:8889/metrics (real-time)"
-	@echo "   SigNoz UI: http://localhost:3301"
+	@echo "   SigNoz UI: http://localhost:8080"
 
 docker-down:
 	@echo "🛑 Stopping Docker Compose services..."
-	docker-compose --profile signoz down
+	docker-compose --profile lite --profile signoz down
 	@echo "✅ Services stopped"
 
 docker-restart:

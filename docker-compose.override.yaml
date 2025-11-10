@@ -1,0 +1,62 @@
+# Override file to add profiles and network configuration to official SigNoz services
+# This file is automatically merged with docker-compose.yaml
+# All SigNoz services are assigned to the "signoz" profile and connected to both networks
+
+services:
+  # SigNoz infrastructure services
+  init-clickhouse:
+    profiles: ["signoz"]
+    networks:
+      - signoz-net
+      - default
+
+  zookeeper-1:
+    profiles: ["signoz"]
+    networks:
+      - signoz-net
+      - default
+
+  clickhouse:
+    profiles: ["signoz"]
+    networks:
+      - signoz-net
+      - default
+    ports:
+      - "9000:9000" # Expose for debugging
+      - "8123:8123" # HTTP interface
+
+  # Schema migration services
+  schema-migrator-sync:
+    profiles: ["signoz"]
+    command: ["sync", "--dsn=tcp://clickhouse:9000"]  # Remove --up= flag
+    networks:
+      - signoz-net
+      - default
+
+  schema-migrator-async:
+    profiles: ["signoz"]
+    command: ["async", "--dsn=tcp://clickhouse:9000"]  # Remove --up= flag
+    networks:
+      - signoz-net
+      - default
+
+  # SigNoz main application
+  signoz:
+    profiles: ["signoz"]
+    networks:
+      - signoz-net
+      - default
+
+  # OpenTelemetry Collector (replaces otel-collector-lite when signoz profile is active)
+  otel-collector:
+    profiles: ["signoz"]
+    networks:
+      signoz-net:
+      default:
+        aliases:
+          - otel-collector  # Network alias so our apps can find it
+    # Custom config extends official config to add PostgreSQL metrics scraping
+    volumes:
+      - ./otel-signoz.yaml:/etc/otel-collector-config.yaml:ro
+    depends_on:
+      - sql-exporter

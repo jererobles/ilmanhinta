@@ -1,3 +1,12 @@
+include:
+  - path: ./signoz/deploy/docker/docker-compose.yaml
+    env_file: ./signoz/deploy/docker/.env
+
+x-common-env: &common-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+
 services:
   postgres:
     build:
@@ -36,6 +45,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - default
 
   dagster-daemon:
     build: .
@@ -43,9 +54,8 @@ services:
     env_file:
       - .env
     environment:
+      <<: *common-env
       DATA_DIR: /data
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: ilmanhinta-dagster-daemon
     volumes:
       - ./src:/app/src
@@ -56,6 +66,8 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    networks:
+      - default
 
   dagster-webserver:
     build: .
@@ -63,8 +75,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      <<: *common-env
       OTEL_SERVICE_NAME: ilmanhinta-dagster-webserver
     ports:
       - "3000:3000"
@@ -75,6 +86,8 @@ services:
     depends_on:
       - dagster-daemon
     restart: unless-stopped
+    networks:
+      - default
 
   api:
     build: .
@@ -82,8 +95,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      <<: *common-env
       OTEL_SERVICE_NAME: ilmanhinta-api
     ports:
       - "8000:8000"
@@ -97,6 +109,8 @@ services:
       - "prometheus.scrape=true"
       - "prometheus.port=8000"
       - "prometheus.path=/metrics"
+    networks:
+      - default
 
   sql-exporter:
     image: burningalchemist/sql_exporter:latest
@@ -111,85 +125,16 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    networks:
+      - default
 
-  # Lightweight OpenTelemetry Collector (always runs)
-  # Receives OTLP telemetry from applications and scrapes Prometheus metrics
-  # Exposes metrics at :8889/metrics for real-time debugging (no storage)
-  # Logs traces/metrics to console (ephemeral)
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.96.0
-    command: ["--config=/etc/otelcol-contrib/config.yaml"]
-    volumes:
-      - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
-    ports:
-      - "4317:4317"   # OTLP gRPC receiver
-      - "4318:4318"   # OTLP HTTP receiver
-      - "8888:8888"   # Collector internal metrics
-      - "8889:8889"   # Prometheus exporter endpoint
-    depends_on:
-      - sql-exporter
-    restart: unless-stopped
-
-  # =============== SigNoz Full Stack (Profile: signoz) ===============
-  # Start with: docker-compose --profile signoz up -d
-  # Or: make docker-up-full
-  # Includes ClickHouse storage backend, query service, and web UI
-
-  otel-collector-signoz:
-    profiles: ["signoz"]
-    image: signoz/signoz-otel-collector:0.88.11
-    command: ["--config=/etc/otel-collector-config.yaml"]
-    volumes:
-      - ./signoz-otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
-    ports:
-      - "4319:4317"   # OTLP gRPC (different host port to avoid conflict)
-      - "4320:4318"   # OTLP HTTP (different host port to avoid conflict)
-    depends_on:
-      - signoz-clickhouse
-    restart: unless-stopped
-
-  signoz-clickhouse:
-    profiles: ["signoz"]
-    image: clickhouse/clickhouse-server:23.7-alpine
-    tty: true
-    volumes:
-      - ./signoz-clickhouse-config.xml:/etc/clickhouse-server/config.d/config.xml
-      - ./signoz-clickhouse-users.xml:/etc/clickhouse-server/users.d/users.xml
-      - signoz_clickhouse_data:/var/lib/clickhouse/
-    ports:
-      - "9000:9000"
-      - "8123:8123"
-    restart: unless-stopped
-
-  signoz-query-service:
-    profiles: ["signoz"]
-    image: signoz/query-service:0.36.2
-    command: ["-config=/root/config/prometheus.yml"]
-    ports:
-      - "6060:6060"   # Query service metrics
-      - "8080:8080"   # Query service HTTP
-    volumes:
-      - ./signoz-prometheus.yml:/root/config/prometheus.yml
-      - signoz_data:/var/lib/signoz/
-    environment:
-      - ClickHouseUrl=tcp://signoz-clickhouse:9000
-      - STORAGE=clickhouse
-    depends_on:
-      - signoz-clickhouse
-    restart: unless-stopped
-
-  signoz-frontend:
-    profiles: ["signoz"]
-    image: signoz/frontend:0.36.2
-    ports:
-      - "3301:3301"
-    depends_on:
-      - signoz-query-service
-    restart: unless-stopped
+# Connect our services to both our network and SigNoz network
+# signoz-net is defined in the included SigNoz compose file
+networks:
+  default:
+    name: ilmanhinta_default
 
 volumes:
   postgres_data:
   dagster_storage:
   pipeline_data:
-  signoz_clickhouse_data:
-  signoz_data:
