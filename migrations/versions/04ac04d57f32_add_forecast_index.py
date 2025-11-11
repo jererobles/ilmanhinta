@@ -34,7 +34,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_weather_forecast_lookup
-        ON weather_observations(station_id, data_type, time DESC)
+        ON fmi_weather_observations(station_id, data_type, time DESC)
         WHERE data_type = 'forecast'
         """
     )

@@ -36,8 +36,7 @@ services:
       - "log_line_prefix=%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init_timescaledb_enhanced.sql:/docker-entrypoint-initdb.d/01_init.sql
-      - ./init.sql:/docker-entrypoint-initdb.d/02_init_legacy.sql
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:

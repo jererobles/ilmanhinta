@@ -166,17 +166,42 @@ class PostgresClient:
             Number of rows inserted
         """
         pdf = df.to_pandas()
+
+        # Normalize timestamp column name
+        if "timestamp" in pdf.columns and "time" not in pdf.columns:
+            pdf = pdf.rename(columns={"timestamp": "time"})
+
         pdf["area"] = area
         pdf["price_type"] = price_type
         pdf["source"] = source
 
-        pdf.to_sql(
-            "electricity_prices",
-            con=self.engine,
-            if_exists="append",
-            index=False,
-            method="multi",
+        records: list[dict[str, object]] = []
+        for _, row in pdf.iterrows():
+            records.append(
+                {
+                    "time": row.get("time"),
+                    "price_eur_mwh": row.get("price_eur_mwh"),
+                    "area": row.get("area"),
+                    "price_type": row.get("price_type"),
+                    "source": row.get("source"),
+                }
+            )
+
+        if not records:
+            return 0
+
+        insert_sql = text(
+            """
+            INSERT INTO electricity_prices (time, price_eur_mwh, area, price_type, source)
+            VALUES (:time, :price_eur_mwh, :area, :price_type, :source)
+            ON CONFLICT DO NOTHING
+        """
         )
+
+        with self.session() as session:
+            session.execute(insert_sql, records)
+            session.commit()
+
         return len(pdf)
 
     def insert_weather(self, df: pl.DataFrame, station_id: str) -> int:

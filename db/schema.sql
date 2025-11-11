@@ -23,7 +23,7 @@ CREATE EXTENSION IF NOT EXISTS pg_stat_monitor;
 -- =============================================================================
 
 -- Electricity consumption data (15-min intervals from Fingrid)
-CREATE TABLE IF NOT EXISTS electricity_consumption (
+CREATE TABLE IF NOT EXISTS fingrid_power_actuals (
     time TIMESTAMPTZ NOT NULL,
     consumption_mw DOUBLE PRECISION,
     production_mw DOUBLE PRECISION,
@@ -36,19 +36,21 @@ CREATE TABLE IF NOT EXISTS electricity_consumption (
 );
 
 -- Electricity spot prices (hourly)
-CREATE TABLE IF NOT EXISTS electricity_prices (
+CREATE TABLE IF NOT EXISTS fingrid_price_actuals (
     time TIMESTAMPTZ NOT NULL,
     price_eur_mwh DOUBLE PRECISION NOT NULL,
     area TEXT DEFAULT 'FI',
+    price_type TEXT DEFAULT 'imbalance',
     source TEXT DEFAULT 'nordpool',
     ingested_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(time, area)
+    UNIQUE(time, area, price_type)
 );
 
 -- Weather observations (hourly from FMI)
-CREATE TABLE IF NOT EXISTS weather_observations (
+CREATE TABLE IF NOT EXISTS fmi_weather_observations (
     time TIMESTAMPTZ NOT NULL,
     station_id TEXT NOT NULL,
+    station_name TEXT,
     temperature_c DOUBLE PRECISION,
     humidity_percent DOUBLE PRECISION,
     wind_speed_ms DOUBLE PRECISION,
@@ -61,8 +63,8 @@ CREATE TABLE IF NOT EXISTS weather_observations (
     UNIQUE(time, station_id, data_type)
 );
 
--- Predictions table (stores ALL historical predictions for model evaluation)
-CREATE TABLE IF NOT EXISTS predictions (
+-- Consumption model predictions (stores ALL historical runs for evaluation)
+CREATE TABLE IF NOT EXISTS consumption_model_predictions (
     timestamp TIMESTAMPTZ NOT NULL,
     predicted_consumption_mw DOUBLE PRECISION NOT NULL,
     confidence_lower DOUBLE PRECISION NOT NULL,
@@ -70,7 +72,54 @@ CREATE TABLE IF NOT EXISTS predictions (
     model_type TEXT NOT NULL, -- 'lightgbm', 'prophet', 'ensemble'
     model_version TEXT,
     generated_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (timestamp, model_type, generated_at) -- Allow multiple predictions per timestamp
+    PRIMARY KEY (timestamp, model_type, generated_at) -- Allow multiple consumption_model_predictions per timestamp
+);
+
+-- FMI weather forecasts (feature store for ML)
+CREATE TABLE IF NOT EXISTS fmi_weather_forecasts (
+    forecast_time TIMESTAMPTZ NOT NULL,
+    station_id TEXT NOT NULL,
+    station_name TEXT,
+    temperature_c DOUBLE PRECISION,
+    wind_speed_ms DOUBLE PRECISION,
+    wind_direction DOUBLE PRECISION,
+    cloud_cover DOUBLE PRECISION,
+    humidity_percent DOUBLE PRECISION,
+    pressure_hpa DOUBLE PRECISION,
+    precipitation_mm DOUBLE PRECISION,
+    global_radiation_wm2 DOUBLE PRECISION,
+    forecast_model TEXT DEFAULT 'harmonie',
+    generated_at TIMESTAMPTZ NOT NULL,
+    ingested_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (forecast_time, station_id, generated_at)
+);
+
+-- Fingrid official forecasts (baseline + ML features)
+CREATE TABLE IF NOT EXISTS fingrid_power_forecasts (
+    forecast_time TIMESTAMPTZ NOT NULL,
+    forecast_type TEXT NOT NULL, -- consumption, production, wind, price
+    value DOUBLE PRECISION NOT NULL,
+    unit TEXT DEFAULT 'MW',
+    update_frequency TEXT,
+    generated_at TIMESTAMPTZ NOT NULL,
+    ingested_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (forecast_time, forecast_type, generated_at)
+);
+
+-- Price model predictions (vs Fingrid comparison)
+CREATE TABLE IF NOT EXISTS price_model_predictions (
+    prediction_time TIMESTAMPTZ NOT NULL,
+    model_type TEXT NOT NULL,
+    model_version TEXT,
+    predicted_price_eur_mwh DOUBLE PRECISION NOT NULL,
+    confidence_lower DOUBLE PRECISION,
+    confidence_upper DOUBLE PRECISION,
+    predicted_consumption_mw DOUBLE PRECISION,
+    generated_at TIMESTAMPTZ NOT NULL,
+    features_hash TEXT,
+    training_end_date TIMESTAMPTZ,
+    ingested_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (prediction_time, model_type, generated_at)
 );
 
 -- =============================================================================
@@ -78,25 +127,40 @@ CREATE TABLE IF NOT EXISTS predictions (
 -- =============================================================================
 
 -- Partition by time with 7-day chunks (good balance for this data volume)
-SELECT create_hypertable('electricity_consumption', 'time',
+SELECT create_hypertable('fingrid_power_actuals', 'time',
     chunk_time_interval => INTERVAL '7 days',
     if_not_exists => TRUE
 );
 
-SELECT create_hypertable('electricity_prices', 'time',
+SELECT create_hypertable('fingrid_price_actuals', 'time',
     chunk_time_interval => INTERVAL '7 days',
     if_not_exists => TRUE
 );
 
-SELECT create_hypertable('weather_observations', 'time',
+SELECT create_hypertable('fmi_weather_observations', 'time',
     chunk_time_interval => INTERVAL '7 days',
     if_not_exists => TRUE
 );
 
 -- Predictions table: Use generated_at for partitioning (when prediction was made)
--- This allows efficient queries like "show me predictions made in the last 7 days"
-SELECT create_hypertable('predictions', 'generated_at',
+-- This allows efficient queries like "show me consumption predictions made in the last 7 days"
+SELECT create_hypertable('consumption_model_predictions', 'generated_at',
     chunk_time_interval => INTERVAL '30 days',
+    if_not_exists => TRUE
+);
+
+SELECT create_hypertable('fmi_weather_forecasts', 'forecast_time',
+    chunk_time_interval => INTERVAL '1 day',
+    if_not_exists => TRUE
+);
+
+SELECT create_hypertable('fingrid_power_forecasts', 'forecast_time',
+    chunk_time_interval => INTERVAL '1 day',
+    if_not_exists => TRUE
+);
+
+SELECT create_hypertable('price_model_predictions', 'prediction_time',
+    chunk_time_interval => INTERVAL '1 day',
     if_not_exists => TRUE
 );
 
@@ -104,52 +168,85 @@ SELECT create_hypertable('predictions', 'generated_at',
 -- COMPRESSION POLICIES (Store 10x more data in same space)
 -- =============================================================================
 
--- Enable compression on electricity_consumption
-ALTER TABLE electricity_consumption SET (
+-- Enable compression on fingrid_power_actuals
+ALTER TABLE fingrid_power_actuals SET (
   timescaledb.compress,
   timescaledb.compress_segmentby = 'source',
   timescaledb.compress_orderby = 'time DESC'
 );
 
 -- Compress data older than 7 days (still queryable, just compressed)
-SELECT add_compression_policy('electricity_consumption',
+SELECT add_compression_policy('fingrid_power_actuals',
     INTERVAL '7 days',
     if_not_exists => TRUE
 );
 
--- Enable compression on weather_observations
-ALTER TABLE weather_observations SET (
+-- Enable compression on fmi_weather_observations
+ALTER TABLE fmi_weather_observations SET (
   timescaledb.compress,
   timescaledb.compress_segmentby = 'station_id, data_type',
   timescaledb.compress_orderby = 'time DESC'
 );
 
-SELECT add_compression_policy('weather_observations',
+SELECT add_compression_policy('fmi_weather_observations',
     INTERVAL '7 days',
     if_not_exists => TRUE
 );
 
--- Enable compression on predictions (segment by model type)
-ALTER TABLE predictions SET (
+-- Enable compression on consumption_model_predictions (segment by model type)
+ALTER TABLE consumption_model_predictions SET (
   timescaledb.compress,
   timescaledb.compress_segmentby = 'model_type',
   timescaledb.compress_orderby = 'generated_at DESC, timestamp DESC'
 );
 
-SELECT add_compression_policy('predictions',
-    INTERVAL '30 days', -- Compress predictions older than 30 days
+SELECT add_compression_policy('consumption_model_predictions',
+    INTERVAL '30 days', -- Compress consumption_model_predictions older than 30 days
     if_not_exists => TRUE
 );
 
 -- Enable compression on prices
-ALTER TABLE electricity_prices SET (
+ALTER TABLE fingrid_price_actuals SET (
   timescaledb.compress,
   timescaledb.compress_segmentby = 'area',
   timescaledb.compress_orderby = 'time DESC'
 );
 
-SELECT add_compression_policy('electricity_prices',
+SELECT add_compression_policy('fingrid_price_actuals',
     INTERVAL '7 days',
+    if_not_exists => TRUE
+);
+
+ALTER TABLE fmi_weather_forecasts SET (
+  timescaledb.compress,
+  timescaledb.compress_segmentby = 'station_id',
+  timescaledb.compress_orderby = 'forecast_time DESC'
+);
+
+SELECT add_compression_policy('fmi_weather_forecasts',
+    INTERVAL '7 days',
+    if_not_exists => TRUE
+);
+
+ALTER TABLE fingrid_power_forecasts SET (
+  timescaledb.compress,
+  timescaledb.compress_segmentby = 'forecast_type',
+  timescaledb.compress_orderby = 'forecast_time DESC'
+);
+
+SELECT add_compression_policy('fingrid_power_forecasts',
+    INTERVAL '7 days',
+    if_not_exists => TRUE
+);
+
+ALTER TABLE price_model_predictions SET (
+  timescaledb.compress,
+  timescaledb.compress_segmentby = 'model_type',
+  timescaledb.compress_orderby = 'prediction_time DESC'
+);
+
+SELECT add_compression_policy('price_model_predictions',
+    INTERVAL '30 days',
     if_not_exists => TRUE
 );
 
@@ -157,14 +254,22 @@ SELECT add_compression_policy('electricity_prices',
 -- INDEXES FOR COMMON QUERIES
 -- =============================================================================
 
-CREATE INDEX IF NOT EXISTS idx_consumption_time ON electricity_consumption(time DESC);
-CREATE INDEX IF NOT EXISTS idx_weather_station_time ON weather_observations(station_id, time DESC);
-CREATE INDEX IF NOT EXISTS idx_weather_type ON weather_observations(data_type, time DESC);
-CREATE INDEX IF NOT EXISTS idx_weather_forecast_lookup ON weather_observations(station_id, data_type, time DESC)
+CREATE INDEX IF NOT EXISTS idx_consumption_time ON fingrid_power_actuals(time DESC);
+CREATE INDEX IF NOT EXISTS idx_weather_station_time ON fmi_weather_observations(station_id, time DESC);
+CREATE INDEX IF NOT EXISTS idx_weather_type ON fmi_weather_observations(data_type, time DESC);
+CREATE INDEX IF NOT EXISTS idx_weather_forecast_lookup ON fmi_weather_observations(station_id, data_type, time DESC)
     WHERE data_type = 'forecast';
-CREATE INDEX IF NOT EXISTS idx_prices_area ON electricity_prices(area, time DESC);
-CREATE INDEX IF NOT EXISTS idx_predictions_model ON predictions(model_type, timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_predictions_generated ON predictions(generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fmi_weather_forecasts_station ON fmi_weather_forecasts (station_id, forecast_time DESC);
+CREATE INDEX IF NOT EXISTS idx_fmi_weather_forecasts_generated ON fmi_weather_forecasts (generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fingrid_power_forecasts_type_time ON fingrid_power_forecasts (forecast_type, forecast_time DESC);
+CREATE INDEX IF NOT EXISTS idx_fingrid_power_forecasts_generated ON fingrid_power_forecasts (generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_prices_area ON fingrid_price_actuals(area, time DESC);
+CREATE INDEX IF NOT EXISTS idx_prices_type ON fingrid_price_actuals(price_type, time DESC);
+CREATE INDEX IF NOT EXISTS idx_predictions_model ON consumption_model_predictions(model_type, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_predictions_generated ON consumption_model_predictions(generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_price_model_predictions_model ON price_model_predictions(model_type, prediction_time DESC);
+CREATE INDEX IF NOT EXISTS idx_price_model_predictions_generated ON price_model_predictions(generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_price_model_predictions_version ON price_model_predictions(model_version, prediction_time DESC);
 
 -- =============================================================================
 -- CONTINUOUS AGGREGATES (Pre-computed analytics, auto-updating)
@@ -186,7 +291,7 @@ SELECT
     AVG(wind_mw) AS avg_wind_mw,
     AVG(nuclear_mw) AS avg_nuclear_mw,
     COUNT(*) AS sample_count
-FROM electricity_consumption
+FROM fingrid_power_actuals
 GROUP BY hour
 WITH NO DATA;
 
@@ -212,7 +317,7 @@ SELECT
     MIN(price_eur_mwh) AS min_price,
     -- Use uddsketch for percentile approximations (faster than exact percentiles)
     uddsketch(100, 0.001, price_eur_mwh) AS price_distribution
-FROM electricity_prices
+FROM fingrid_price_actuals
 GROUP BY day, area
 WITH NO DATA;
 
@@ -224,7 +329,7 @@ SELECT add_continuous_aggregate_policy('prices_daily',
 );
 
 -- 3. CRITICAL: Prediction accuracy metrics (for model evaluation)
--- This joins predictions with actual consumption to track model performance
+-- This joins consumption_model_predictions with actual consumption to track model performance
 -- Using timescaledb-toolkit for cleaner error statistics
 -- NOTE: Regular materialized view (not continuous aggregate) because it joins multiple hypertables
 CREATE MATERIALIZED VIEW IF NOT EXISTS prediction_accuracy_hourly AS
@@ -256,11 +361,11 @@ SELECT
     -- Confidence interval width using stats_agg
     stats_agg(p.confidence_upper - p.confidence_lower) AS interval_width_stats
 
-FROM predictions p
+FROM consumption_model_predictions p
 -- Join with actual consumption (use hourly bucket to match prediction timestamps)
-JOIN electricity_consumption c
+JOIN fingrid_power_actuals c
     ON time_bucket('1 hour', c.time) = time_bucket('1 hour', p.timestamp)
--- Only evaluate predictions that have passed (1 hour buffer)
+-- Only evaluate consumption_model_predictions that have passed (1 hour buffer)
 WHERE p.timestamp < NOW() - INTERVAL '1 hour'
 GROUP BY hour, p.model_type;
 
@@ -306,8 +411,8 @@ SELECT
     END) * 100 AS coverage_percent,
     MAX(p.model_version) AS latest_version,
     MAX(p.generated_at) AS latest_prediction_time
-FROM predictions p
-JOIN electricity_consumption c
+FROM consumption_model_predictions p
+JOIN fingrid_power_actuals c
     ON time_bucket('1 hour', c.time) = time_bucket('1 hour', p.timestamp)
 WHERE p.timestamp >= NOW() - INTERVAL '24 hours'
   AND p.timestamp < NOW() - INTERVAL '1 hour'
@@ -323,23 +428,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_model_comparison_24h_unique ON model_compa
 -- Uncomment these if you want to auto-delete old data:
 
 -- Keep consumption data for 2 years
--- SELECT add_retention_policy('electricity_consumption', INTERVAL '2 years', if_not_exists => TRUE);
+-- SELECT add_retention_policy('fingrid_power_actuals', INTERVAL '2 years', if_not_exists => TRUE);
 
 -- Keep weather for 2 years
--- SELECT add_retention_policy('weather_observations', INTERVAL '2 years', if_not_exists => TRUE);
+-- SELECT add_retention_policy('fmi_weather_observations', INTERVAL '2 years', if_not_exists => TRUE);
 
--- Keep predictions forever (for model evaluation) - no retention policy
+-- Keep consumption_model_predictions forever (for model evaluation) - no retention policy
 -- If disk space becomes an issue, you can add:
--- SELECT add_retention_policy('predictions', INTERVAL '5 years', if_not_exists => TRUE);
+-- SELECT add_retention_policy('consumption_model_predictions', INTERVAL '5 years', if_not_exists => TRUE);
 
 -- Keep prices for 3 years
--- SELECT add_retention_policy('electricity_prices', INTERVAL '3 years', if_not_exists => TRUE);
+-- SELECT add_retention_policy('fingrid_price_actuals', INTERVAL '3 years', if_not_exists => TRUE);
 
 -- =============================================================================
 -- HELPER VIEWS (For convenience)
 -- =============================================================================
 
--- Latest predictions from each model
+-- Latest consumption_model_predictions from each model
 CREATE OR REPLACE VIEW latest_predictions_per_model AS
 SELECT DISTINCT ON (model_type, timestamp)
     timestamp,
@@ -349,11 +454,11 @@ SELECT DISTINCT ON (model_type, timestamp)
     confidence_upper,
     model_version,
     generated_at
-FROM predictions
+FROM consumption_model_predictions
 WHERE generated_at = (
     SELECT MAX(generated_at)
-    FROM predictions p2
-    WHERE p2.model_type = predictions.model_type
+    FROM consumption_model_predictions p2
+    WHERE p2.model_type = consumption_model_predictions.model_type
 )
 ORDER BY model_type, timestamp, generated_at DESC;
 
@@ -367,7 +472,7 @@ SELECT DISTINCT ON (station_id)
     wind_speed_ms,
     pressure_hpa,
     cloud_cover
-FROM weather_observations
+FROM fmi_weather_observations
 WHERE data_type = 'observation'
 ORDER BY station_id, time DESC;
 
@@ -385,10 +490,10 @@ GRANT SELECT ON latest_predictions_per_model TO api;
 GRANT SELECT ON current_weather TO api;
 
 -- Grant read/write access to base tables
-GRANT SELECT, INSERT, UPDATE ON electricity_consumption TO api;
-GRANT SELECT, INSERT, UPDATE ON electricity_prices TO api;
-GRANT SELECT, INSERT, UPDATE ON weather_observations TO api;
-GRANT SELECT, INSERT, UPDATE ON predictions TO api;
+GRANT SELECT, INSERT, UPDATE ON fingrid_power_actuals TO api;
+GRANT SELECT, INSERT, UPDATE ON fingrid_price_actuals TO api;
+GRANT SELECT, INSERT, UPDATE ON fmi_weather_observations TO api;
+GRANT SELECT, INSERT, UPDATE ON consumption_model_predictions TO api;
 
 -- =============================================================================
 -- HELPER VIEWS FOR QUERYING STATS_AGG RESULTS
@@ -538,6 +643,163 @@ GRANT SELECT ON model_comparison_24h_stats TO api;
 GRANT SELECT ON slow_queries TO api;
 GRANT SELECT ON query_performance_buckets TO api;
 GRANT SELECT ON frequent_queries TO api;
+
+-- =============================================================================
+-- PRICE FORECAST COMPARISON VIEWS
+-- =============================================================================
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS prediction_comparison AS
+WITH latest_model_pred AS (
+    SELECT DISTINCT ON (prediction_time)
+        prediction_time,
+        predicted_price_eur_mwh,
+        confidence_lower,
+        confidence_upper,
+        model_type,
+        model_version,
+        generated_at
+    FROM price_model_predictions
+    WHERE model_type = 'production'
+    ORDER BY prediction_time, generated_at DESC
+),
+latest_fingrid_fcst AS (
+    SELECT DISTINCT ON (forecast_time)
+        forecast_time,
+        value AS fingrid_price_forecast
+    FROM fingrid_power_forecasts
+    WHERE forecast_type = 'price'
+    ORDER BY forecast_time, generated_at DESC
+)
+SELECT
+    p.prediction_time AS time,
+    p.predicted_price_eur_mwh AS ml_prediction,
+    p.confidence_lower AS ml_lower,
+    p.confidence_upper AS ml_upper,
+    p.model_type,
+    p.model_version,
+    ff.fingrid_price_forecast,
+    ep.price_eur_mwh AS actual_price,
+    CASE
+        WHEN ep.price_eur_mwh IS NOT NULL
+        THEN ABS(p.predicted_price_eur_mwh - ep.price_eur_mwh)
+    END AS ml_absolute_error,
+    CASE
+        WHEN ep.price_eur_mwh IS NOT NULL AND ep.price_eur_mwh != 0
+        THEN ABS(p.predicted_price_eur_mwh - ep.price_eur_mwh) / ABS(ep.price_eur_mwh) * 100
+    END AS ml_percentage_error,
+    CASE
+        WHEN ep.price_eur_mwh IS NOT NULL AND ff.fingrid_price_forecast IS NOT NULL
+        THEN ABS(ff.fingrid_price_forecast - ep.price_eur_mwh)
+    END AS fingrid_absolute_error,
+    CASE
+        WHEN ep.price_eur_mwh IS NOT NULL AND ff.fingrid_price_forecast IS NOT NULL AND ep.price_eur_mwh != 0
+        THEN ABS(ff.fingrid_price_forecast - ep.price_eur_mwh) / ABS(ep.price_eur_mwh) * 100
+    END AS fingrid_percentage_error,
+    CASE
+        WHEN ep.price_eur_mwh IS NOT NULL AND ff.fingrid_price_forecast IS NOT NULL THEN
+            CASE
+                WHEN ABS(p.predicted_price_eur_mwh - ep.price_eur_mwh) < ABS(ff.fingrid_price_forecast - ep.price_eur_mwh) THEN 1
+                WHEN ABS(p.predicted_price_eur_mwh - ep.price_eur_mwh) > ABS(ff.fingrid_price_forecast - ep.price_eur_mwh) THEN -1
+                ELSE 0
+            END
+    END AS ml_vs_fingrid_winner,
+    p.generated_at AS prediction_generated_at,
+    NOW() AS view_updated_at
+FROM latest_model_pred p
+LEFT JOIN latest_fingrid_fcst ff ON ff.forecast_time = p.prediction_time
+LEFT JOIN fingrid_price_actuals ep
+    ON ep.time = p.prediction_time
+    AND ep.area = 'FI'
+    AND ep.price_type = 'imbalance'
+WHERE p.prediction_time < NOW()
+ORDER BY p.prediction_time DESC;
+
+CREATE INDEX IF NOT EXISTS idx_comparison_time
+    ON prediction_comparison (time DESC);
+CREATE INDEX IF NOT EXISTS idx_comparison_winner
+    ON prediction_comparison (ml_vs_fingrid_winner);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS hourly_prediction_performance AS
+SELECT
+    time_bucket('1 hour', time) AS hour,
+    COUNT(*) AS num_predictions,
+    AVG(ml_absolute_error) AS ml_avg_error,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ml_absolute_error) AS ml_median_error,
+    AVG(ml_percentage_error) AS ml_avg_pct_error,
+    AVG(fingrid_absolute_error) AS fingrid_avg_error,
+    AVG(fingrid_percentage_error) AS fingrid_avg_pct_error,
+    SUM(CASE WHEN ml_vs_fingrid_winner = 1 THEN 1 ELSE 0 END)::FLOAT /
+        NULLIF(COUNT(*), 0) * 100 AS ml_win_rate_pct,
+    AVG(actual_price) AS avg_actual_price,
+    MIN(actual_price) AS min_actual_price,
+    MAX(actual_price) AS max_actual_price
+FROM prediction_comparison
+WHERE actual_price IS NOT NULL
+GROUP BY hour
+WITH NO DATA;
+
+CREATE OR REPLACE FUNCTION refresh_prediction_comparison()
+RETURNS void AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW CONCURRENTLY prediction_comparison;
+    REFRESH MATERIALIZED VIEW CONCURRENTLY hourly_prediction_performance;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION get_latest_performance_summary(
+    hours_back INTEGER DEFAULT 24
+)
+RETURNS TABLE (
+    metric VARCHAR,
+    ml_value NUMERIC,
+    fingrid_value NUMERIC,
+    improvement_pct NUMERIC
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH recent_data AS (
+        SELECT *
+        FROM prediction_comparison
+        WHERE time >= NOW() - (hours_back || ' hours')::INTERVAL
+        AND actual_price IS NOT NULL
+        AND fingrid_price_forecast IS NOT NULL
+    )
+    SELECT
+        'Mean Absolute Error (EUR/MWh)'::VARCHAR,
+        ROUND(AVG(ml_absolute_error)::NUMERIC, 2),
+        ROUND(AVG(fingrid_absolute_error)::NUMERIC, 2),
+        ROUND(((AVG(fingrid_absolute_error) - AVG(ml_absolute_error)) /
+               NULLIF(AVG(fingrid_absolute_error), 0) * 100)::NUMERIC, 1)
+    FROM recent_data
+
+    UNION ALL
+
+    SELECT
+        'Win Rate (%)'::VARCHAR,
+        ROUND((SUM(CASE WHEN ml_vs_fingrid_winner = 1 THEN 1 ELSE 0 END)::FLOAT /
+               NULLIF(COUNT(*), 0) * 100)::NUMERIC, 1),
+        NULL,
+        NULL
+    FROM recent_data;
+END;
+$$ LANGUAGE plpgsql;
+
+GRANT SELECT ON prediction_comparison TO api;
+GRANT SELECT ON hourly_prediction_performance TO api;
+GRANT EXECUTE ON FUNCTION refresh_prediction_comparison TO api;
+GRANT EXECUTE ON FUNCTION get_latest_performance_summary TO api;
+
+-- =============================================================================
+-- RETENTION POLICIES
+-- =============================================================================
+
+SELECT add_retention_policy('fingrid_power_actuals', INTERVAL '730 days', if_not_exists => TRUE);
+SELECT add_retention_policy('fingrid_price_actuals', INTERVAL '730 days', if_not_exists => TRUE);
+SELECT add_retention_policy('fmi_weather_observations', INTERVAL '730 days', if_not_exists => TRUE);
+SELECT add_retention_policy('fmi_weather_forecasts', INTERVAL '90 days', if_not_exists => TRUE);
+SELECT add_retention_policy('fingrid_power_forecasts', INTERVAL '90 days', if_not_exists => TRUE);
+SELECT add_retention_policy('consumption_model_predictions', INTERVAL '365 days', if_not_exists => TRUE);
+SELECT add_retention_policy('price_model_predictions', INTERVAL '365 days', if_not_exists => TRUE);
 
 -- =============================================================================
 -- DONE! Now you have:
