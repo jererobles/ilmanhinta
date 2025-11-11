@@ -36,7 +36,7 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.47b0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "ruff>=0.2.0",
     "mypy>=1.8.0",
@@ -84,14 +84,13 @@ ignore = [
 [tool.mypy]
 python_version = "3.11"
 strict = true
+no_silence_site_packages = false
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+exclude = ["^signoz"]
 plugins = ["pydantic.mypy"]
 
-[[tool.mypy.overrides]]
-module = ["fmiopendata.*", "lightgbm.*", "dagster.*", "duckdb.*", "holidays.*"]
-ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
