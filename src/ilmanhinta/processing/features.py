@@ -72,16 +72,16 @@ class FeatureEngineer:
             rolling_exprs.extend(
                 [
                     pl.col(target_col)
-                    .rolling_mean(window_size=window, min_periods=1)
+                    .rolling_mean(window_size=window, min_samples=1)
                     .alias(f"{target_col}_rolling_mean_{window}h"),
                     pl.col(target_col)
-                    .rolling_std(window_size=window, min_periods=1)
+                    .rolling_std(window_size=window, min_samples=1)
                     .alias(f"{target_col}_rolling_std_{window}h"),
                     pl.col(target_col)
-                    .rolling_min(window_size=window, min_periods=1)
+                    .rolling_min(window_size=window, min_samples=1)
                     .alias(f"{target_col}_rolling_min_{window}h"),
                     pl.col(target_col)
-                    .rolling_max(window_size=window, min_periods=1)
+                    .rolling_max(window_size=window, min_samples=1)
                     .alias(f"{target_col}_rolling_max_{window}h"),
                 ]
             )

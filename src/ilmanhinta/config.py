@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # Fingrid API
-    fingrid_api_key: str = Field(..., description="Fingrid API key from data.fingrid.fi")
+    fingrid_api_key: str = Field(default="", description="Fingrid API key from data.fingrid.fi")
 
     # FMI Settings
     fmi_station_id: str = Field(default="101004", description="FMI station ID (Helsinki)")
