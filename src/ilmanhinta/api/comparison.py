@@ -15,9 +15,10 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from ilmanhinta.db.postgres_client import PostgresClient
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
 
 router = APIRouter(prefix="/api/v1", tags=["price_predictions"])
+logger = get_logger(__name__)
 
 
 # =====================================================
@@ -125,7 +126,7 @@ async def get_latest_predictions(
         query = """
             WITH latest_run AS (
                 SELECT MAX(generated_at) as latest
-                FROM model_predictions
+                FROM price_model_predictions
                 WHERE model_type = :model_type
             )
             SELECT
@@ -136,7 +137,7 @@ async def get_latest_predictions(
                 model_type,
                 model_version,
                 generated_at
-            FROM model_predictions, latest_run
+            FROM price_model_predictions, latest_run
             WHERE generated_at = latest_run.latest
               AND model_type = :model_type
               AND prediction_time >= NOW()
@@ -169,7 +170,7 @@ async def get_latest_predictions(
                 "Have you generated predictions yet?",
             )
 
-        logfire.info(f"Served {len(predictions)} latest predictions for {model_type}")
+        logger.info(f"Served {len(predictions)} latest predictions for {model_type}")
         return predictions
 
     finally:
@@ -246,7 +247,7 @@ async def get_comparison(
             for row in comparison_df.iter_rows(named=True)
         ]
 
-        logfire.info(f"Served {len(comparisons)} comparison records")
+        logger.info(f"Served {len(comparisons)} comparison records")
         return comparisons
 
     finally:
@@ -351,7 +352,7 @@ async def get_hourly_performance(
             for row in hourly_df.iter_rows(named=True)
         ]
 
-        logfire.info(f"Served {len(performance)} hourly performance records")
+        logger.info(f"Served {len(performance)} hourly performance records")
         return performance
 
     finally:
@@ -465,7 +466,7 @@ async def get_win_conditions(
                 "Try reducing min_cases or increasing hours_back.",
             )
 
-        logfire.info(f"Served {len(conditions)} win conditions grouped by {group_by}")
+        logger.info(f"Served {len(conditions)} win conditions grouped by {group_by}")
         return conditions
 
     finally:
@@ -490,7 +491,7 @@ async def refresh_comparison_views() -> dict[str, str]:
 
     try:
         db.refresh_materialized_views()
-        logfire.info("Materialized views refreshed successfully")
+        logger.info("Materialized views refreshed successfully")
 
         return {
             "status": "success",
@@ -499,7 +500,7 @@ async def refresh_comparison_views() -> dict[str, str]:
         }
 
     except Exception as e:
-        logfire.error(f"Error refreshing views: {e}")
+        logger.error(f"Error refreshing views: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to refresh views: {str(e)}") from e
 
     finally:

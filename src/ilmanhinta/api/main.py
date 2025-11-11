@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from ilmanhinta.config import settings
 from ilmanhinta.db.prediction_store import fetch_latest_predictions, get_prediction_status
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import configure_observability, get_logger, instrument_fastapi
 from ilmanhinta.models.fmi import PredictionOutput
 
 from .analytics import router as analytics_router
@@ -32,12 +32,15 @@ app = FastAPI(
     version="0.3.0",  # Bumped version for price prediction + comparison API
 )
 
-# Instrument FastAPI with Logfire for automatic tracing
-logfire.instrument_fastapi(app)
+logger = get_logger(__name__)
+
+# Instrument FastAPI with OpenTelemetry for automatic tracing
+configure_observability()
+instrument_fastapi(app)
 
 # Include routers
 app.include_router(analytics_router)
-app.include_router(comparison_router)  # NEW: Price prediction comparison API
+app.include_router(comparison_router)
 
 DEFAULT_MODEL_TYPE = os.getenv("PREDICTION_MODEL_TYPE", "lightgbm")
 
@@ -138,7 +141,7 @@ async def predict_peak_consumption() -> PeakPrediction:
     _observe_predictions(predictions)
 
     peak = max(predictions, key=lambda p: p.predicted_consumption_mw)
-    logfire.info(f"Peak prediction: {peak.predicted_consumption_mw:.2f} MW at {peak.timestamp}")
+    logger.info(f"Peak prediction: {peak.predicted_consumption_mw:.2f} MW at {peak.timestamp}")
 
     return PeakPrediction(
         peak_timestamp=peak.timestamp,
@@ -159,7 +162,7 @@ async def predict_24h_forecast() -> list[PredictionOutput]:
     """
     predictions = _ensure_predictions(settings.prediction_horizon_hours)
     _observe_predictions(predictions)
-    logfire.info(f"Serving {len(predictions)} cached hourly predictions")
+    logger.info(f"Serving {len(predictions)} cached hourly predictions")
     return predictions
 
 

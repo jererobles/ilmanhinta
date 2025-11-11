@@ -33,10 +33,11 @@ class PostgresClient:
     - DuckDB can connect via postgres_scanner for analytical queries
 
     Tables:
-    - electricity_consumption: Fingrid electricity data (15-min intervals)
-    - electricity_prices: Spot prices per area
-    - weather_observations: FMI weather data (hourly)
-    - predictions: Model predictions with confidence intervals
+    - fingrid_power_actuals: Fingrid electricity data (15-min intervals)
+    - fingrid_price_actuals: Spot prices per area
+    - fmi_weather_observations: FMI weather data (hourly)
+    - consumption_model_predictions: Consumption model outputs with confidence intervals
+    - price_model_predictions: Price model outputs with confidence intervals
     """
 
     def __init__(self, database_url: str | None = None) -> None:
@@ -131,7 +132,7 @@ class PostgresClient:
             if values_list:
                 upsert_sql = text(
                     """
-                    INSERT INTO electricity_consumption (time, consumption_mw, production_mw, wind_mw, nuclear_mw, net_import_mw)
+                    INSERT INTO fingrid_power_actuals (time, consumption_mw, production_mw, wind_mw, nuclear_mw, net_import_mw)
                     VALUES (:time, :consumption_mw, :production_mw, :wind_mw, :nuclear_mw, :net_import_mw)
                     ON CONFLICT (time) DO UPDATE SET
                         consumption_mw = EXCLUDED.consumption_mw,
@@ -192,7 +193,7 @@ class PostgresClient:
 
         insert_sql = text(
             """
-            INSERT INTO electricity_prices (time, price_eur_mwh, area, price_type, source)
+            INSERT INTO fingrid_price_actuals (time, price_eur_mwh, area, price_type, source)
             VALUES (:time, :price_eur_mwh, :area, :price_type, :source)
             ON CONFLICT DO NOTHING
         """
@@ -254,7 +255,7 @@ class PostgresClient:
             if values_list:
                 upsert_sql = text(
                     """
-                    INSERT INTO weather_observations
+                    INSERT INTO fmi_weather_observations
                     (time, station_id, temperature_c, humidity_percent, wind_speed_ms,
                      wind_direction, pressure_hpa, precipitation_mm, cloud_cover)
                     VALUES (:time, :station_id, :temperature_c, :humidity_percent, :wind_speed_ms,
@@ -306,7 +307,7 @@ class PostgresClient:
         pdf["generated_at"] = generated_at or datetime.now(UTC)
 
         pdf.to_sql(
-            "weather_forecasts",
+            "fmi_weather_forecasts",
             con=self.engine,
             if_exists="append",
             index=False,
@@ -348,7 +349,7 @@ class PostgresClient:
         pdf["generated_at"] = generated_at or datetime.now(UTC)
 
         pdf.to_sql(
-            "fingrid_forecasts",
+            "fingrid_power_forecasts",
             con=self.engine,
             if_exists="append",
             index=False,
@@ -364,7 +365,7 @@ class PostgresClient:
         generated_at: datetime | None = None,
         training_end_date: datetime | None = None,
     ) -> int:
-        """Insert price predictions from Polars DataFrame.
+        """Insert price-model predictions from a Polars DataFrame.
 
         Args:
             df: Polars DataFrame with predictions
@@ -400,7 +401,7 @@ class PostgresClient:
             pdf["training_end_date"] = training_end_date
 
         pdf.to_sql(
-            "model_predictions",
+            "price_model_predictions",
             con=self.engine,
             if_exists="append",
             index=False,
@@ -408,7 +409,7 @@ class PostgresClient:
         )
         return len(pdf)
 
-    def get_weather_forecasts(
+    def get_fmi_weather_forecasts(
         self,
         start_time: datetime,
         end_time: datetime,
@@ -435,7 +436,7 @@ class PostgresClient:
                 global_radiation_wm2,
                 forecast_model,
                 generated_at
-            FROM weather_forecasts
+            FROM fmi_weather_forecasts
             WHERE forecast_time >= :start_time AND forecast_time <= :end_time
         """
 
@@ -462,7 +463,7 @@ class PostgresClient:
             pdf = pd.DataFrame(rows, columns=result.keys())
             return pl.from_pandas(pdf)
 
-    def get_fingrid_forecasts(
+    def get_fingrid_power_forecasts(
         self,
         start_time: datetime,
         end_time: datetime,
@@ -478,7 +479,7 @@ class PostgresClient:
                 unit,
                 update_frequency,
                 generated_at
-            FROM fingrid_forecasts
+            FROM fingrid_power_forecasts
             WHERE forecast_time >= :start_time AND forecast_time <= :end_time
         """
 
@@ -521,7 +522,7 @@ class PostgresClient:
         query = text(
             """
             SELECT time, consumption_mw, production_mw, net_import_mw
-            FROM electricity_consumption
+            FROM fingrid_power_actuals
             WHERE time >= :start_time AND time <= :end_time
             ORDER BY time
         """
@@ -553,7 +554,7 @@ class PostgresClient:
         query = text(
             """
             SELECT time, price_eur_mwh, area
-            FROM electricity_prices
+            FROM fingrid_price_actuals
             WHERE time >= :start_time AND time <= :end_time
               AND area = :area
             ORDER BY time
@@ -596,7 +597,7 @@ class PostgresClient:
                        humidity_percent AS humidity,
                        pressure_hpa AS pressure,
                        precipitation_mm
-                FROM weather_observations
+                FROM fmi_weather_observations
                 WHERE time >= :start_time AND time <= :end_time
                   AND station_id = :station_id
                 ORDER BY time
@@ -614,7 +615,7 @@ class PostgresClient:
                        humidity_percent AS humidity,
                        pressure_hpa AS pressure,
                        precipitation_mm
-                FROM weather_observations
+                FROM fmi_weather_observations
                 WHERE time >= :start_time AND time <= :end_time
                 ORDER BY time
             """
@@ -631,7 +632,7 @@ class PostgresClient:
         model_type: str = "prophet",
         limit: int = 24,
     ) -> pl.DataFrame:
-        """Get latest predictions.
+        """Get latest consumption-model predictions.
 
         Args:
             model_type: Filter by model type
@@ -644,7 +645,7 @@ class PostgresClient:
             """
             WITH latest_run AS (
                 SELECT MAX(generated_at) as latest_generated
-                FROM predictions
+                FROM consumption_model_predictions
                 WHERE model_type = :model_type
             )
             SELECT
@@ -655,7 +656,7 @@ class PostgresClient:
                 p.model_type,
                 p.model_version,
                 p.generated_at
-            FROM predictions p, latest_run
+            FROM consumption_model_predictions p, latest_run
             WHERE p.generated_at = latest_run.latest_generated
               AND p.model_type = :model_type
             ORDER BY p.timestamp
@@ -701,15 +702,15 @@ class PostgresClient:
                 w.pressure_hpa AS pressure,
                 w.precipitation_mm,
                 p.price_eur_mwh
-            FROM electricity_consumption c
+            FROM fingrid_power_actuals c
             LEFT JOIN LATERAL (
-                SELECT * FROM weather_observations w2
+                SELECT * FROM fmi_weather_observations w2
                 WHERE w2.time <= c.time
                 ORDER BY w2.time DESC
                 LIMIT 1
             ) w ON true
             LEFT JOIN LATERAL (
-                SELECT * FROM electricity_prices p2
+                SELECT * FROM fingrid_price_actuals p2
                 WHERE p2.time = c.time
                   AND p2.area = 'FI'
                 LIMIT 1
@@ -853,6 +854,9 @@ class PostgresClient:
     def refresh_materialized_views(self) -> None:
         """Refresh all materialized views for better query performance."""
         with self.session() as session:
+            # Keep prediction comparison views in sync before downstream aggregates
+            session.execute(text("SELECT refresh_prediction_comparison()"))
+
             # Refresh prediction accuracy views (non-continuous due to multi-hypertable joins)
             session.execute(
                 text("REFRESH MATERIALIZED VIEW CONCURRENTLY prediction_accuracy_hourly")
@@ -881,13 +885,17 @@ class PostgresClient:
         """
         with self.session() as session:
             consumption_count = session.execute(
-                text("SELECT COUNT(*) FROM electricity_consumption")
+                text("SELECT COUNT(*) FROM fingrid_power_actuals")
             ).scalar()
-            prices_count = session.execute(text("SELECT COUNT(*) FROM electricity_prices")).scalar()
+            prices_count = session.execute(
+                text("SELECT COUNT(*) FROM fingrid_price_actuals")
+            ).scalar()
             weather_count = session.execute(
-                text("SELECT COUNT(*) FROM weather_observations")
+                text("SELECT COUNT(*) FROM fmi_weather_observations")
             ).scalar()
-            predictions_count = session.execute(text("SELECT COUNT(*) FROM predictions")).scalar()
+            predictions_count = session.execute(
+                text("SELECT COUNT(*) FROM consumption_model_predictions")
+            ).scalar()
 
             # Get database size
             db_size = session.execute(

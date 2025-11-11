@@ -7,8 +7,10 @@ from typing import Any
 import httpx
 
 from ilmanhinta.config import settings
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
 from ilmanhinta.models.fingrid import FingridDataPoint, FingridResponse
+
+logger = get_logger(__name__)
 
 
 class FingridClient:
@@ -40,7 +42,7 @@ class FingridClient:
         if cache_key in self._cache:
             cached_at, cached_data = self._cache[cache_key]
             if datetime.now(UTC) - cached_at < timedelta(seconds=settings.cache_ttl_seconds):
-                logfire.debug(f"Cache hit for dataset {dataset_id}")
+                logger.debug(f"Cache hit for dataset {dataset_id}")
                 return cached_data
 
         # Format timestamps for API (ISO 8601)
@@ -52,7 +54,7 @@ class FingridClient:
         }
 
         url = f"{self.BASE_URL}/{dataset_id}/data"
-        logfire.info(f"Fetching Fingrid dataset {dataset_id} from {start_time} to {end_time}")
+        logger.info(f"Fetching Fingrid dataset {dataset_id} from {start_time} to {end_time}")
 
         # Retry with exponential backoff for rate limit errors
         for attempt in range(max_retries):
@@ -66,7 +68,7 @@ class FingridClient:
                 # Cache the result
                 self._cache[cache_key] = (datetime.now(UTC), parsed.data)
 
-                logfire.info(
+                logger.info(
                     f"Fetched {len(parsed.data)} data points from Fingrid dataset {dataset_id}"
                 )
                 return parsed.data
@@ -75,16 +77,16 @@ class FingridClient:
                 # Retry on rate limit errors (429) with exponential backoff
                 if e.response.status_code == 429 and attempt < max_retries - 1:
                     delay = 2**attempt  # 1s, 2s, 4s
-                    logfire.warning(
+                    logger.warning(
                         f"Rate limited (429) on dataset {dataset_id}, retrying in {delay}s (attempt {attempt + 1}/{max_retries})"
                     )
                     await asyncio.sleep(delay)
                     continue
                 else:
-                    logfire.error(f"HTTP error fetching Fingrid data: {e}")
+                    logger.error(f"HTTP error fetching Fingrid data: {e}")
                     raise
             except Exception as e:
-                logfire.error(f"Error fetching Fingrid data: {e}")
+                logger.error(f"Error fetching Fingrid data: {e}")
                 raise
 
         # This should never be reached, but just in case
@@ -238,7 +240,7 @@ class FingridClient:
         Returns:
             Dict with keys: consumption, production, wind, nuclear, net_import
         """
-        logfire.info(f"Fetching all electricity data for last {hours} hours (with rate limiting)")
+        logger.info(f"Fetching all electricity data for last {hours} hours (with rate limiting)")
 
         # Fetch datasets sequentially with small delays to avoid rate limiting
         # Parallel requests were triggering 429 Too Many Requests
@@ -278,7 +280,7 @@ class FingridClient:
                            price_imbalance, price_imbalance_sale, price_imbalance_buy,
                            price_down_regulation
         """
-        logfire.info(f"Fetching training data for last {hours} hours")
+        logger.info(f"Fetching training data for last {hours} hours")
 
         # Fetch actuals
         consumption = await self.fetch_realtime_consumption(hours)
@@ -308,7 +310,7 @@ class FingridClient:
 
         price_down_regulation = await self.fetch_down_regulation_price(hours)
 
-        logfire.info("Completed fetching training data")
+        logger.info("Completed fetching training data")
 
         return {
             "consumption": consumption,
@@ -338,7 +340,7 @@ class FingridClient:
             Dict with keys: consumption_forecast_rt, consumption_forecast_daily,
                            production_forecast, wind_forecast
         """
-        logfire.info(f"Fetching forecast data for next {hours} hours")
+        logger.info(f"Fetching forecast data for next {hours} hours")
 
         # Fetch Fingrid's official forecasts
         consumption_forecast_rt = await self.fetch_consumption_forecast_realtime(hours)
@@ -352,7 +354,7 @@ class FingridClient:
 
         wind_forecast = await self.fetch_wind_forecast(hours)
 
-        logfire.info("Completed fetching forecast data")
+        logger.info("Completed fetching forecast data")
 
         return {
             "consumption_forecast_rt": consumption_forecast_rt,

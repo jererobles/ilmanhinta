@@ -1,7 +1,8 @@
 """Shared prediction storage using PostgreSQL + TimescaleDB.
 
-This module provides a simplified interface for storing and retrieving predictions.
-All predictions are stored in PostgreSQL with TimescaleDB for efficient time-series queries.
+This module provides a simplified interface for storing and retrieving consumption-model
+predictions. All consumption predictions are stored in PostgreSQL with TimescaleDB for efficient
+time-series queries.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ except ModuleNotFoundError as e:  # pragma: no cover
     ) from e
 
 POSTGRES_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS predictions (
+CREATE TABLE IF NOT EXISTS consumption_model_predictions (
     timestamp TIMESTAMPTZ NOT NULL,
     predicted_consumption_mw DOUBLE PRECISION NOT NULL,
     confidence_lower DOUBLE PRECISION NOT NULL,
@@ -55,7 +56,7 @@ def _pg_conn():
 
 
 def _ensure_postgres_schema() -> None:
-    """Create the predictions table if it doesn't exist."""
+    """Create the consumption_model_predictions table if it doesn't exist."""
     with _pg_conn() as conn, conn.cursor() as cur:
         cur.execute(POSTGRES_TABLE_SQL)
         conn.commit()
@@ -65,10 +66,10 @@ def store_predictions(
     predictions: list[PredictionOutput],
     model_type: str,
 ) -> int:
-    """Persist predictions to PostgreSQL + TimescaleDB.
+    """Persist consumption-model predictions to PostgreSQL + TimescaleDB.
 
     Args:
-        predictions: List of predictions for the next horizon
+        predictions: List of upcoming consumption predictions
         model_type: Model identifier (lightgbm, ensemble, prophet, etc.)
 
     Returns:
@@ -94,7 +95,7 @@ def store_predictions(
     with _pg_conn() as conn, conn.cursor() as cur:
         cur.executemany(
             """
-            INSERT INTO predictions (
+            INSERT INTO consumption_model_predictions (
                 timestamp,
                 predicted_consumption_mw,
                 confidence_lower,
@@ -122,10 +123,9 @@ def fetch_latest_predictions(
     limit: int = 24,
     model_type: str | None = None,
 ) -> list[PredictionOutput]:
-    """Fetch most recent predictions for the given model.
+    """Fetch most recent consumption-model predictions for the given model.
 
-    Returns predictions from the latest prediction run (latest generated_at),
-    ordered chronologically by timestamp.
+    Returns predictions from the latest run (latest generated_at), ordered chronologically.
 
     Args:
         limit: Maximum number of predictions to return
@@ -150,7 +150,7 @@ def fetch_latest_predictions(
     query = f"""
         WITH latest_run AS (
             SELECT MAX(generated_at) as latest_generated
-            FROM predictions
+            FROM consumption_model_predictions
             {cte_where_clause}
         )
         SELECT
@@ -160,7 +160,7 @@ def fetch_latest_predictions(
             confidence_upper,
             model_type,
             COALESCE(model_version, 'unknown') AS model_version
-        FROM predictions p, latest_run
+        FROM consumption_model_predictions p, latest_run
         WHERE p.generated_at = latest_run.latest_generated
         {where_clause}
         ORDER BY timestamp ASC
@@ -184,7 +184,7 @@ def fetch_latest_predictions(
 
 
 def get_prediction_status(model_type: str | None = None) -> dict[str, Any]:
-    """Return availability metadata for latest predictions.
+    """Return availability metadata for latest consumption-model predictions.
 
     Args:
         model_type: Filter by model type (optional)
@@ -205,7 +205,7 @@ def get_prediction_status(model_type: str | None = None) -> dict[str, Any]:
             timestamp,
             model_version,
             generated_at
-        FROM predictions
+        FROM consumption_model_predictions
         {where_clause}
         ORDER BY generated_at DESC, timestamp DESC
         LIMIT 1

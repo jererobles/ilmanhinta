@@ -159,7 +159,7 @@ async def compare_models() -> list[ModelComparison]:
 
         if not rows:
             raise HTTPException(
-                status_code=404, detail="No predictions available for the last 24 hours"
+                status_code=404, detail="No consumption predictions available for the last 24 hours"
             )
 
         return [
@@ -259,9 +259,9 @@ async def get_analytics_summary() -> dict[str, Any]:
             cur.execute(
                 """
                 SELECT
-                    (SELECT COUNT(*) FROM electricity_consumption) as consumption_count,
-                    (SELECT COUNT(*) FROM weather_observations) as weather_count,
-                    (SELECT COUNT(*) FROM predictions) as predictions_count
+                    (SELECT COUNT(*) FROM fingrid_power_actuals) as consumption_count,
+                    (SELECT COUNT(*) FROM fmi_weather_observations) as weather_count,
+                    (SELECT COUNT(*) FROM consumption_model_predictions) as predictions_count
             """
             )
             counts = cur.fetchone()
@@ -269,7 +269,7 @@ async def get_analytics_summary() -> dict[str, Any]:
             # Get latest prediction timestamp
             cur.execute(
                 """
-                SELECT MAX(timestamp) FROM predictions
+                SELECT MAX(timestamp) FROM consumption_model_predictions
             """
             )
             latest_prediction = cur.fetchone()[0]
@@ -278,7 +278,7 @@ async def get_analytics_summary() -> dict[str, Any]:
             "best_model_24h": {
                 "model_type": best_model[0] if best_model else None,
                 "mae_mw": best_model[1] if best_model else None,
-                "predictions": best_model[2] if best_model else 0,
+                "prediction_count": best_model[2] if best_model else 0,
             },
             "data_coverage": {
                 "consumption_rows": counts[0] if counts else 0,

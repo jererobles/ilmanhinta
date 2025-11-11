@@ -4,25 +4,25 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Iterable
 
 import polars as pl
 
 from ilmanhinta.clients.fingrid import FingridClient
 from ilmanhinta.clients.fmi import FMIClient
 from ilmanhinta.db.postgres_client import PostgresClient
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
 from ilmanhinta.models.fingrid import FingridDataPoint, FingridDatasets
 from ilmanhinta.processing.joins import TemporalJoiner
-
 
 DEFAULT_HOURS = 24 * 30  # 1 month
 DEFAULT_CHUNK_HOURS = 240  # keep Fingrid requests <10k data points
 DEFAULT_PAGE_SIZE = 10_000
 DEFAULT_PRICE_BUFFER_HOURS = 168  # lag features need trailing week
 TARGET_CHOICES: tuple[str, ...] = ("actuals", "prices", "forecasts", "weather")
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -147,12 +147,9 @@ async def _fetch_dataset_points(
     """Fetch a Fingrid dataset in manageable chunks to avoid API hard limits."""
     points: list[FingridDataPoint] = []
     for chunk_start, chunk_end in _chunk_ranges(start_time, end_time, chunk_hours):
-        logfire.info(
-            "Fetching %s dataset %s from %s to %s",
-            label,
-            dataset_id,
-            chunk_start.isoformat(),
-            chunk_end.isoformat(),
+        logger.info(
+            f"Fetching {label} dataset {dataset_id} "
+            f"from {chunk_start.isoformat()} to {chunk_end.isoformat()}"
         )
         data = await client.fetch_data(
             dataset_id=dataset_id,
@@ -167,7 +164,7 @@ async def _fetch_dataset_points(
             await asyncio.sleep(0.25)
 
     points.sort(key=lambda p: p.start_time)
-    logfire.info("Fetched %s points for %s", len(points), label)
+    logger.info(f"Fetched {len(points)} points for {label}")
     return points
 
 
@@ -195,19 +192,19 @@ async def _backfill_actuals(
         if points:
             dataset_map[key] = points
         else:
-            logfire.warning("No %s data returned for requested window", key)
+            logger.warning(f"No {key} data returned for requested window")
 
     if not dataset_map:
-        logfire.warning("Skipping consumption insert: no actual datasets fetched")
+        logger.warning("Skipping consumption insert: no actual datasets fetched")
         return 0
 
     df = TemporalJoiner.merge_fingrid_datasets(dataset_map)
     if df.is_empty():
-        logfire.warning("Merged actuals dataframe is empty")
+        logger.warning("Merged actuals dataframe is empty")
         return 0
 
     inserted = db.insert_consumption(df)
-    logfire.info("Inserted %s merged actual rows", inserted)
+    logger.info(f"Inserted {inserted} merged actual rows")
     return inserted
 
 
@@ -237,7 +234,7 @@ async def _backfill_prices(
     )
 
     if not points:
-        logfire.warning("No price data returned for requested window")
+        logger.warning("No price data returned for requested window")
         return 0
 
     df = pl.DataFrame(
@@ -247,7 +244,7 @@ async def _backfill_prices(
         }
     )
     inserted = db.insert_prices(df, area="FI", price_type="imbalance", source="fingrid")
-    logfire.info("Inserted %s price rows (%s buffer hrs)", inserted, buffer_hours)
+    logger.info(f"Inserted {inserted} price rows ({buffer_hours} buffer hrs)")
     return inserted
 
 
@@ -278,7 +275,7 @@ async def _backfill_forecasts(
         )
 
         if not points:
-            logfire.warning("No %s forecasts returned", forecast_type)
+            logger.warning(f"No {forecast_type} forecasts returned")
             continue
 
         df = pl.DataFrame(
@@ -294,7 +291,7 @@ async def _backfill_forecasts(
             update_frequency=source.update_frequency,
             generated_at=generation_timestamp,
         )
-        logfire.info("Inserted %s %s forecast rows", inserted, forecast_type)
+        logger.info(f"Inserted {inserted} {forecast_type} forecast rows")
         total += inserted
 
     return total
@@ -309,26 +306,24 @@ async def _backfill_weather(
 ) -> int:
     """Backfill FMI weather observations (actuals)."""
     client = FMIClient(station_id=station_id)
-    logfire.info(
-        "Fetching FMI observations for station %s (%s -> %s)",
-        client.station_id,
-        start_time.isoformat(),
-        end_time.isoformat(),
+    logger.info(
+        f"Fetching FMI observations for station {client.station_id} "
+        f"({start_time.isoformat()} -> {end_time.isoformat()})"
     )
 
     weather_data = await asyncio.to_thread(client.fetch_observations, start_time, end_time)
     if not weather_data.observations:
-        logfire.warning("No weather observations returned for %s", client.station_id)
+        logger.warning(f"No weather observations returned for {client.station_id}")
         return 0
 
     df = TemporalJoiner.fmi_to_polars(weather_data.observations)
     if df.is_empty():
-        logfire.warning("Weather dataframe empty after conversion")
+        logger.warning("Weather dataframe empty after conversion")
         return 0
 
     df = df.with_columns(pl.lit(client.station_id).alias("station_id"))
     inserted = db.insert_weather(df, station_id=client.station_id)
-    logfire.info("Inserted %s weather rows for station %s", inserted, client.station_id)
+    logger.info(f"Inserted {inserted} weather rows for station {client.station_id}")
     return inserted
 
 
@@ -345,11 +340,9 @@ async def run_backfill() -> None:
 
     end_time = datetime.now(UTC)
     start_time = end_time - timedelta(hours=args.hours)
-    logfire.info(
-        "Backfilling targets %s for window %s -> %s",
-        targets,
-        start_time.isoformat(),
-        end_time.isoformat(),
+    logger.info(
+        f"Backfilling targets {targets} "
+        f"for window {start_time.isoformat()} -> {end_time.isoformat()}"
     )
 
     summary: dict[str, int] = {}
@@ -402,7 +395,7 @@ async def run_backfill() -> None:
     finally:
         db.close()
 
-    logfire.info("Backfill complete: %s", summary)
+    logger.info(f"Backfill complete: {summary}")
 
 
 def main() -> None:

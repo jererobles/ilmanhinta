@@ -19,7 +19,7 @@ from ilmanhinta.clients.fingrid import FingridClient
 from ilmanhinta.clients.fmi import FMIClient
 from ilmanhinta.db.postgres_client import PostgresClient
 from ilmanhinta.db.prediction_store import get_prediction_status, store_predictions
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
 from ilmanhinta.ml.model import ConsumptionModel
 from ilmanhinta.ml.predict import Predictor
 from ilmanhinta.processing.features import FeatureEngineer
@@ -28,6 +28,7 @@ from ilmanhinta.processing.joins import TemporalJoiner
 # Data directory
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
+logger = get_logger(__name__)
 
 
 @asset
@@ -37,7 +38,7 @@ async def fingrid_consumption_data(context: AssetExecutionContext) -> Path:
     This replaces the old single-dataset approach with a comprehensive fetch
     that ensures all features are available for both training and prediction.
     """
-    logfire.info("Fetching all Fingrid electricity data (consumption, production, wind, nuclear)")
+    logger.info("Fetching all Fingrid electricity data (consumption, production, wind, nuclear)")
 
     async with FingridClient() as client:
         # Fetch last 30 days for training - ALL datasets in parallel
@@ -59,7 +60,7 @@ async def fingrid_consumption_data(context: AssetExecutionContext) -> Path:
     context.log.info(
         f"Saved {len(df)} electricity records to {output_path} and {rows_inserted} to PostgreSQL"
     )
-    logfire.info(
+    logger.info(
         f"Fetched features: {df.columns} - ensuring feature parity for training & prediction"
     )
     return output_path
@@ -68,7 +69,7 @@ async def fingrid_consumption_data(context: AssetExecutionContext) -> Path:
 @asset
 def fmi_weather_data(context: AssetExecutionContext) -> Path:
     """Fetch weather observations from FMI."""
-    logfire.info("Fetching FMI weather data")
+    logger.info("Fetching FMI weather data")
 
     client = FMIClient()
 
@@ -102,7 +103,7 @@ def fmi_weather_data(context: AssetExecutionContext) -> Path:
 @asset(deps=[fingrid_consumption_data, fmi_weather_data])
 def processed_training_data(context: AssetExecutionContext) -> Path:
     """Join and process data for model training using PostgreSQL + TimescaleDB."""
-    logfire.info("Processing training data from PostgreSQL")
+    logger.info("Processing training data from PostgreSQL")
     from datetime import timedelta
 
     # Query last 30 days from PostgreSQL (uses LATERAL JOIN for temporal alignment)
@@ -141,7 +142,7 @@ def processed_training_data(context: AssetExecutionContext) -> Path:
 @asset(deps=[processed_training_data])
 def trained_lightgbm_model(context: AssetExecutionContext) -> Path:
     """Train LightGBM model on processed data with engineered features."""
-    logfire.info("Training LightGBM consumption prediction model")
+    logger.info("Training LightGBM consumption prediction model")
 
     # Load latest processed data
     processed_files = sorted((DATA_DIR / "processed").glob("training_data_*.parquet"))
@@ -178,7 +179,7 @@ def hourly_forecast_predictions(context: AssetExecutionContext) -> int:
     """Generate the next 24-hour forecast and persist it for the API."""
     import asyncio
 
-    logfire.info("Generating scheduled 24h forecast")
+    logger.info("Generating scheduled 24h forecast")
 
     model_path = DATA_DIR / "models" / "lightgbm_latest.pkl"
     if not model_path.exists():

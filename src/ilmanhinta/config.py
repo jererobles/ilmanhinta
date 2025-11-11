@@ -1,6 +1,6 @@
 """Application configuration using Pydantic v2 settings."""
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,10 +22,17 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", description="Logging level")
     cache_ttl_seconds: int = Field(default=180, description="Cache TTL for real-time data")
 
-    # Logfire (Pydantic observability)
-    logfire_token: str | None = Field(default=None, description="Logfire API token")
-    logfire_project: str = Field(default="ilmanhinta", description="Logfire project name")
-    logfire_environment: str = Field(default="production", description="Environment name")
+    # Observability
+    observability_service_name: str = Field(
+        default="ilmanhinta",
+        validation_alias=AliasChoices("OTEL_SERVICE_NAME", "LOGFIRE_PROJECT"),
+        description="Service name reported in OpenTelemetry exports",
+    )
+    observability_environment: str = Field(
+        default="production",
+        validation_alias=AliasChoices("OTEL_ENVIRONMENT", "LOGFIRE_ENVIRONMENT"),
+        description="Environment label attached to telemetry exports",
+    )
 
     # ML Model
     model_retrain_hours: int = Field(default=24, description="Hours between model retraining")

@@ -36,8 +36,8 @@ from ilmanhinta.dagster.jobs import (
 from ilmanhinta.dagster.price_prediction_jobs import (
     # Assets
     collect_actual_prices,
-    collect_fingrid_forecasts,
-    collect_weather_forecasts,
+    collect_fingrid_power_forecasts,
+    collect_fmi_weather_forecasts,
     daily_analysis_job,
     generate_performance_report,
     generate_price_predictions,
@@ -72,8 +72,8 @@ defs = Definitions(
         hourly_forecast_predictions,
         # === Price Prediction Assets ===
         collect_actual_prices,
-        collect_fingrid_forecasts,
-        collect_weather_forecasts,
+        collect_fingrid_power_forecasts,
+        collect_fmi_weather_forecasts,
         generate_price_predictions,
         refresh_comparison_views,
         retrain_price_model,

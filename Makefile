@@ -75,12 +75,12 @@ ensure-dirs:
 
 lint:
 	@echo "🔍 Running linter..."
-	ruff check .
+	uv run ruff check .
 
 format:
 	@echo "✨ Formatting code..."
-	ruff format .
-	ruff check --fix .
+	uv run ruff format .
+	uv run ruff check --fix .
 
 test:
 	@echo "🧪 Running tests..."
@@ -157,6 +157,11 @@ docker-down:
 	@echo "🛑 Stopping Docker Compose services..."
 	docker-compose --profile lite --profile signoz down
 	@echo "✅ Services stopped"
+
+docker-clean:
+	@echo "🧹 Removing Docker Compose services and volumes..."
+	docker-compose --profile lite --profile signoz down -v
+	@echo "✅ Services and volumes removed"
 
 docker-restart:
 	@echo "🔄 Restarting Docker Compose services..."

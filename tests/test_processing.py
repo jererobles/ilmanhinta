@@ -119,7 +119,7 @@ def test_prediction_dataset_builder_uses_forecasts() -> None:
     end = datetime(2024, 1, 1, 13, 0, 0)
 
     class DummyDB:
-        def get_weather_forecasts(
+        def get_fmi_weather_forecasts(
             self, start_time: datetime, end_time: datetime, **_: object
         ) -> pl.DataFrame:  # noqa: ANN001
             times = [start_time, end_time]
@@ -135,7 +135,7 @@ def test_prediction_dataset_builder_uses_forecasts() -> None:
                 }
             )
 
-        def get_fingrid_forecasts(
+        def get_fingrid_power_forecasts(
             self, start_time: datetime, end_time: datetime, **_: object
         ) -> pl.DataFrame:  # noqa: ANN001
             rows = []

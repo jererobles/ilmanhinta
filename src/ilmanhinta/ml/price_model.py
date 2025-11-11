@@ -28,8 +28,10 @@ try:
 except ImportError:
     HAS_LIGHTGBM = False
 
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
 from ilmanhinta.processing.dataset_builder import get_feature_names, split_train_test_temporal
+
+logger = get_logger(__name__)
 
 
 class PricePredictionModel:
@@ -71,7 +73,7 @@ class PricePredictionModel:
         Returns:
             Dictionary of training metrics
         """
-        logfire.info(f"Training {self.model_type} model on {len(train_df)} samples")
+        logger.info(f"Training {self.model_type} model on {len(train_df)} samples")
 
         # Split into train/validation (temporal)
         train_data, val_data = split_train_test_temporal(train_df, test_size=validation_split)
@@ -85,8 +87,8 @@ class PricePredictionModel:
         X_val = val_data.select(self.feature_names).to_numpy()
         y_val = val_data.select(target_col).to_numpy().ravel()
 
-        logfire.info(f"Training set: {len(X_train)} samples, {len(self.feature_names)} features")
-        logfire.info(f"Validation set: {len(X_val)} samples")
+        logger.info(f"Training set: {len(X_train)} samples, {len(self.feature_names)} features")
+        logger.info(f"Validation set: {len(X_val)} samples")
 
         # Create and train model
         self.model = self._create_model()
@@ -119,9 +121,9 @@ class PricePredictionModel:
             "val_mape": self._calculate_mape(y_val, y_pred),
         }
 
-        logfire.info(f"Validation MAE: {self.training_metrics['val_mae']:.2f} EUR/MWh")
-        logfire.info(f"Validation RMSE: {self.training_metrics['val_rmse']:.2f} EUR/MWh")
-        logfire.info(f"Validation R²: {self.training_metrics['val_r2']:.3f}")
+        logger.info(f"Validation MAE: {self.training_metrics['val_mae']:.2f} EUR/MWh")
+        logger.info(f"Validation RMSE: {self.training_metrics['val_rmse']:.2f} EUR/MWh")
+        logger.info(f"Validation R²: {self.training_metrics['val_r2']:.3f}")
 
         # Calculate feature importance
         self._calculate_feature_importance()
@@ -141,7 +143,7 @@ class PricePredictionModel:
         if self.model is None:
             raise RuntimeError("Model not trained yet. Call train() first.")
 
-        logfire.info(f"Predicting prices for {len(df)} periods")
+        logger.info(f"Predicting prices for {len(df)} periods")
 
         # Extract features
         X = df.select(self.feature_names).to_numpy()
@@ -174,7 +176,7 @@ class PricePredictionModel:
             }
         )
 
-        logfire.info(
+        logger.info(
             f"Predictions: mean={predictions.mean():.2f}, "
             f"min={predictions.min():.2f}, max={predictions.max():.2f} EUR/MWh"
         )
@@ -200,7 +202,7 @@ class PricePredictionModel:
         }
 
         joblib.dump(model_data, path)
-        logfire.info(f"Model saved to {path}")
+        logger.info(f"Model saved to {path}")
 
     def load(self, path: str | Path) -> None:
         """Load trained model from disk."""
@@ -217,7 +219,7 @@ class PricePredictionModel:
         self.feature_importance = model_data.get("feature_importance", {})
         self.training_metrics = model_data.get("training_metrics", {})
 
-        logfire.info(f"Model loaded from {path}")
+        logger.info(f"Model loaded from {path}")
 
     def _create_model(self):
         """Create model instance based on model_type."""
@@ -297,12 +299,12 @@ class PricePredictionModel:
                     self.feature_importance.items(), key=lambda x: x[1], reverse=True
                 )[:10]
 
-                logfire.info("Top 10 important features:")
+                logger.info("Top 10 important features:")
                 for feat, imp in top_features:
-                    logfire.info(f"  {feat}: {imp:.4f}")
+                    logger.info(f"  {feat}: {imp:.4f}")
 
         except Exception as e:
-            logfire.warning(f"Could not calculate feature importance: {e}")
+            logger.warning(f"Could not calculate feature importance: {e}")
 
     @staticmethod
     def _calculate_mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:

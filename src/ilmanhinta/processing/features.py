@@ -2,8 +2,10 @@
 
 import polars as pl
 
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
 from ilmanhinta.processing.holiday_features import add_holiday_features
+
+logger = get_logger(__name__)
 
 
 class FeatureEngineer:
@@ -25,7 +27,7 @@ class FeatureEngineer:
             ]
         )
 
-        logfire.debug("Added time-based features")
+        logger.debug("Added time-based features")
         return df
 
     @staticmethod
@@ -48,7 +50,7 @@ class FeatureEngineer:
 
         df = df.with_columns(lag_exprs)
 
-        logfire.debug(f"Added lag features for {target_col}: {lags}")
+        logger.debug(f"Added lag features for {target_col}: {lags}")
         return df
 
     @staticmethod
@@ -86,7 +88,7 @@ class FeatureEngineer:
 
         df = df.with_columns(rolling_exprs)
 
-        logfire.debug(f"Added rolling window features for {target_col}: {windows}")
+        logger.debug(f"Added rolling window features for {target_col}: {windows}")
         return df
 
     @staticmethod
@@ -126,7 +128,7 @@ class FeatureEngineer:
                 ).alias("wind_chill")
             )
 
-        logfire.debug("Added weather interaction features")
+        logger.debug("Added weather interaction features")
         return df
 
     @staticmethod
@@ -145,7 +147,7 @@ class FeatureEngineer:
           inference where the target is unknown for the forecast row, set to
           False and handle row selection downstream.
         """
-        logfire.info(f"Creating features from {len(df)} records")
+        logger.info(f"Creating features from {len(df)} records")
 
         df = FeatureEngineer.add_time_features(df)
         df = add_holiday_features(df, time_col="timestamp")
@@ -166,12 +168,12 @@ class FeatureEngineer:
             final_count = len(df)
 
             if initial_count > final_count:
-                logfire.info(
+                logger.info(
                     f"Dropped {initial_count - final_count} rows with missing critical values "
                     f"(target or weather features)"
                 )
 
-        logfire.info(
+        logger.info(
             f"Feature engineering complete: {len(df)} records with {len(df.columns)} features"
         )
 

@@ -15,7 +15,9 @@ from datetime import date, timedelta
 import holidays
 import polars as pl
 
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def get_finnish_holidays() -> holidays.Finland:
@@ -70,11 +72,11 @@ def add_holiday_features(df: pl.DataFrame, time_col: str = "timestamp") -> pl.Da
         DataFrame with added holiday feature columns
     """
     if df.is_empty():
-        logfire.debug("Empty DataFrame, skipping holiday features")
+        logger.debug("Empty DataFrame, skipping holiday features")
         return df
 
     if time_col not in df.columns:
-        logfire.warning(f"Column '{time_col}' not found, skipping holiday features")
+        logger.warning(f"Column '{time_col}' not found, skipping holiday features")
         return df
 
     fi_holidays = get_finnish_holidays()
@@ -97,6 +99,6 @@ def add_holiday_features(df: pl.DataFrame, time_col: str = "timestamp") -> pl.Da
         ]
     )
 
-    logfire.debug("Added holiday features: is_holiday, is_holiday_eve, is_bridge_day")
+    logger.debug("Added holiday features: is_holiday, is_holiday_eve, is_bridge_day")
 
     return df

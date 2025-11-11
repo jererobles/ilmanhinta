@@ -6,11 +6,13 @@ import polars as pl
 
 from ilmanhinta.clients.fingrid import FingridClient
 from ilmanhinta.clients.fmi import FMIClient
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
 from ilmanhinta.ml.model import ConsumptionModel
 from ilmanhinta.models.fmi import PredictionOutput
 from ilmanhinta.processing.features import FeatureEngineer
 from ilmanhinta.processing.joins import TemporalJoiner
+
+logger = get_logger(__name__)
 
 
 class Predictor:
@@ -28,7 +30,7 @@ class Predictor:
 
         Returns hourly predictions with confidence intervals.
         """
-        logfire.info("Generating 24-hour consumption forecast")
+        logger.info("Generating 24-hour consumption forecast")
 
         # 1. Fetch historical electricity data (consumption + production + wind + nuclear)
         # This ensures we have ALL features that were used during training
@@ -40,7 +42,7 @@ class Predictor:
         forecast_df = TemporalJoiner.fmi_to_polars(weather_forecast.observations)
 
         if forecast_df.is_empty():
-            logfire.error("No weather forecast available")
+            logger.error("No weather forecast available")
             return []
 
         # Rename weather columns to match model training features
@@ -81,7 +83,7 @@ class Predictor:
                     pl.lit(None, dtype=pl.Float64).alias(col)
                 )
 
-        logfire.info(
+        logger.info(
             f"Historical data columns: {consumption_df.columns} - includes all electricity features"
         )
 
@@ -184,7 +186,7 @@ class Predictor:
                     "timestamp"
                 )
 
-        logfire.info(f"Generated {len(predictions)} hourly predictions")
+        logger.info(f"Generated {len(predictions)} hourly predictions")
 
         return predictions
 
@@ -196,7 +198,7 @@ class Predictor:
             return None
 
         peak = max(predictions, key=lambda p: p.predicted_consumption_mw)
-        logfire.info(
+        logger.info(
             f"Peak consumption predicted at {peak.timestamp}: {peak.predicted_consumption_mw:.2f} MW"
         )
 

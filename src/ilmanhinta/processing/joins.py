@@ -4,9 +4,11 @@ from datetime import timedelta
 
 import polars as pl
 
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
 from ilmanhinta.models.fingrid import FingridDataPoint
 from ilmanhinta.models.fmi import FMIObservation
+
+logger = get_logger(__name__)
 
 
 class TemporalJoiner:
@@ -63,7 +65,7 @@ class TemporalJoiner:
         dfs = []
         for key, data in datasets.items():
             if not data:
-                logfire.warning(f"No data for {key} dataset")
+                logger.warning(f"No data for {key} dataset")
                 continue
 
             column_name = column_mapping.get(key, f"{key}_mw")
@@ -80,7 +82,7 @@ class TemporalJoiner:
         for key, df in dfs[1:]:
             # Use outer join with coalesce to handle duplicate timestamp columns
             merged = merged.join(df, on="timestamp", how="outer", coalesce=True)
-            logfire.info(f"Merged {key} dataset: {len(merged)} total records")
+            logger.info(f"Merged {key} dataset: {len(merged)} total records")
 
         # Sort by timestamp
         merged = merged.sort("timestamp")
@@ -98,7 +100,7 @@ class TemporalJoiner:
         if "consumption_mw" in merged.columns:
             merged = merged.drop_nulls(subset=["consumption_mw"])
 
-        logfire.info(f"Merged all Fingrid datasets: {len(merged)} final records after forward-fill")
+        logger.info(f"Merged all Fingrid datasets: {len(merged)} final records after forward-fill")
 
         return merged
 
@@ -139,10 +141,10 @@ class TemporalJoiner:
         within the specified tolerance window.
         """
         if consumption_df.is_empty() or weather_df.is_empty():
-            logfire.warning("Empty dataframe provided for temporal join")
+            logger.warning("Empty dataframe provided for temporal join")
             return pl.DataFrame()
 
-        logfire.info(
+        logger.info(
             f"Performing temporal join: {len(consumption_df)} consumption records, "
             f"{len(weather_df)} weather records"
         )
@@ -166,11 +168,11 @@ class TemporalJoiner:
         final_count = len(joined)
 
         if initial_count > final_count:
-            logfire.warning(
+            logger.warning(
                 f"Dropped {initial_count - final_count} rows due to missing weather data"
             )
 
-        logfire.info(f"Temporal join completed: {len(joined)} matched records")
+        logger.info(f"Temporal join completed: {len(joined)} matched records")
 
         return joined
 
@@ -207,6 +209,6 @@ class TemporalJoiner:
             .rename({"timestamp_hourly": "timestamp"})
         )
 
-        logfire.info(f"Aligned to hourly resolution: {len(aligned)} records")
+        logger.info(f"Aligned to hourly resolution: {len(aligned)} records")
 
         return aligned

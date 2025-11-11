@@ -174,9 +174,11 @@ Need:
 
 Optional:
 
-- `LOGFIRE_TOKEN`: If you want cloud tracing
 - `FMI_STATION_ID`: Default is Helsinki (101004)
 - `MODEL_RETRAIN_HOURS`: Default 24
+- `OTEL_SERVICE_NAME`: Overrides the default service name shown in traces/logs
+- `OTEL_ENVIRONMENT`: Labels export data with an environment (default `production`)
+- `OTEL_EXPORTER_OTLP_ENDPOINT`: Point to an external collector (default comes from docker compose)
 
 ## Data sources
 

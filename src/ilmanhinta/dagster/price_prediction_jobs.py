@@ -16,12 +16,14 @@ from dagster import AssetExecutionContext, Definitions, ScheduleDefinition, asse
 from ilmanhinta.clients.fingrid import FingridClient
 from ilmanhinta.clients.fmi import FMIClient
 from ilmanhinta.db.postgres_client import PostgresClient
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
 from ilmanhinta.ml.price_model import PricePredictionModel
 from ilmanhinta.processing.dataset_builder import (
     PredictionDatasetBuilder,
     TrainingDatasetBuilder,
 )
+
+logger = get_logger(__name__)
 
 # =====================================================
 # Assets (individual tasks)
@@ -34,7 +36,7 @@ def collect_actual_prices(context: AssetExecutionContext) -> dict:
 
     Fetches the latest actual imbalance prices for training data.
     """
-    logfire.info("Collecting actual prices from Fingrid")
+    logger.info("Collecting actual prices from Fingrid")
 
     async def _fetch():
         async with FingridClient() as client:
@@ -69,12 +71,12 @@ def collect_actual_prices(context: AssetExecutionContext) -> dict:
 
 
 @asset(group_name="data_collection")
-def collect_fingrid_forecasts(context: AssetExecutionContext) -> dict:
+def collect_fingrid_power_forecasts(context: AssetExecutionContext) -> dict:
     """Collect Fingrid's official forecasts (hourly).
 
     Fetches consumption, production, and wind forecasts.
     """
-    logfire.info("Collecting Fingrid forecasts")
+    logger.info("Collecting Fingrid forecasts")
 
     async def _fetch():
         async with FingridClient() as client:
@@ -151,12 +153,12 @@ def collect_fingrid_forecasts(context: AssetExecutionContext) -> dict:
 
 
 @asset(group_name="data_collection")
-def collect_weather_forecasts(context: AssetExecutionContext) -> dict:
+def collect_fmi_weather_forecasts(context: AssetExecutionContext) -> dict:
     """Collect FMI HARMONIE weather forecasts (every 6 hours).
 
     Fetches temperature, wind, pressure, etc. for next 48 hours.
     """
-    logfire.info("Collecting FMI weather forecasts")
+    logger.info("Collecting FMI weather forecasts")
 
     fmi = FMIClient(station_id="101004")  # Helsinki
     weather_fcst = fmi.fetch_forecast(hours=48)
@@ -196,13 +198,16 @@ def collect_weather_forecasts(context: AssetExecutionContext) -> dict:
         db.close()
 
 
-@asset(group_name="prediction", deps=["collect_fingrid_forecasts", "collect_weather_forecasts"])
+@asset(
+    group_name="prediction",
+    deps=["collect_fingrid_power_forecasts", "collect_fmi_weather_forecasts"],
+)
 def generate_price_predictions(context: AssetExecutionContext) -> dict:
     """Generate price predictions using latest forecasts (hourly).
 
     Uses the production model to predict next 48 hours.
     """
-    logfire.info("Generating price predictions")
+    logger.info("Generating price predictions")
 
     # Load production model
     model_dir = Path("models")
@@ -255,7 +260,7 @@ def refresh_comparison_views(context: AssetExecutionContext) -> dict:
 
     Updates the prediction_comparison view with latest data.
     """
-    logfire.info("Refreshing comparison materialized views")
+    logger.info("Refreshing comparison materialized views")
 
     db = PostgresClient()
     try:
@@ -277,7 +282,7 @@ def retrain_price_model(context: AssetExecutionContext) -> dict:
 
     Trains a new model on the last 60 days of data.
     """
-    logfire.info("Retraining price prediction model")
+    logger.info("Retraining price prediction model")
 
     db = PostgresClient()
     try:
@@ -335,7 +340,7 @@ def generate_performance_report(context: AssetExecutionContext) -> dict:
 
     Analyzes the last 7 days of predictions.
     """
-    logfire.info("Generating performance report")
+    logger.info("Generating performance report")
 
     db = PostgresClient()
     try:
@@ -392,8 +397,8 @@ hourly_prediction_job = define_asset_job(
     name="hourly_prediction_job",
     selection=[
         "collect_actual_prices",
-        "collect_fingrid_forecasts",
-        "collect_weather_forecasts",
+        "collect_fingrid_power_forecasts",
+        "collect_fmi_weather_forecasts",
         "generate_price_predictions",
     ],
     description="Collect forecasts and actual prices, then generate predictions",
@@ -446,8 +451,8 @@ weekly_schedule = ScheduleDefinition(
 defs = Definitions(
     assets=[
         collect_actual_prices,
-        collect_fingrid_forecasts,
-        collect_weather_forecasts,
+        collect_fingrid_power_forecasts,
+        collect_fmi_weather_forecasts,
         generate_price_predictions,
         refresh_comparison_views,
         retrain_price_model,

@@ -144,10 +144,13 @@ def test_schema() -> bool:
     """Test that all required tables exist."""
     print("\n🔍 Testing database schema...")
     required_tables = [
-        "electricity_consumption",
-        "electricity_prices",
-        "weather_observations",
-        "predictions",
+        "fingrid_power_actuals",
+        "fingrid_price_actuals",
+        "fmi_weather_observations",
+        "consumption_model_predictions",
+        "price_model_predictions",
+        "fmi_weather_forecasts",
+        "fingrid_power_forecasts",
     ]
     try:
         url = os.getenv("DATABASE_URL", "postgresql://api:hunter2@localhost:5432/ilmanhinta")
