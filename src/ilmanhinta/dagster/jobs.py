@@ -1,7 +1,10 @@
 """Dagster jobs for data ingestion, training, and prediction."""
 
+import asyncio
+from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from dagster import (
     AssetExecutionContext,
@@ -177,7 +180,6 @@ def trained_lightgbm_model(context: AssetExecutionContext) -> Path:
 @asset(deps=[trained_lightgbm_model])
 def hourly_forecast_predictions(context: AssetExecutionContext) -> int:
     """Generate the next 24-hour forecast and persist it for the API."""
-    import asyncio
 
     logger.info("Generating scheduled 24h forecast")
 
@@ -188,7 +190,7 @@ def hourly_forecast_predictions(context: AssetExecutionContext) -> int:
     predictor = Predictor(model_path)
 
     # Run async function in event loop
-    async def _generate_predictions():
+    async def _generate_predictions() -> Any:
         try:
             return await predictor.predict_next_24h()
         finally:
@@ -260,7 +262,7 @@ forecast_schedule = ScheduleDefinition(
     minimum_interval_seconds=300,  # Check every 5 minutes
     default_status=DefaultSensorStatus.RUNNING,  # Auto-enabled on startup
 )
-def bootstrap_sensor(context: SensorEvaluationContext):
+def bootstrap_sensor(context: SensorEvaluationContext) -> Generator[RunRequest, None, None]:
     """Automatically bootstrap the system when predictions are missing.
 
     This sensor checks if predictions exist and triggers the bootstrap job

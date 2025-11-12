@@ -12,24 +12,24 @@ Bridge day logic:
 
 from datetime import date, timedelta
 
-import holidays
 import polars as pl
+from holidays.countries.finland import Finland
 
 from ilmanhinta.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def get_finnish_holidays() -> holidays.Finland:
+def get_finnish_holidays() -> Finland:
     """Get Finnish holidays for years 2020-2031.
 
     Returns:
-        holidays.Finland object with all Finnish public holidays
+        Finland object with all Finnish public holidays
     """
-    return holidays.Finland(years=range(2020, 2031))
+    return Finland(years=range(2020, 2031))  # type: ignore[no-untyped-call]
 
 
-def is_bridge_day(dt: date, fi_holidays: holidays.Finland) -> bool:
+def is_bridge_day(dt: date, fi_holidays: Finland) -> bool:
     """Check if date is a bridge day (between holiday and weekend).
 
     A bridge day is when there's a gap between a holiday and weekend that

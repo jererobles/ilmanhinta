@@ -280,15 +280,17 @@ async def get_performance_summary(
             )
 
         # Convert to response model
-        metrics = [
-            PerformanceMetric(
-                metric_name=metric_name,
-                ml_value=values["ml"],
-                fingrid_value=values["fingrid"],
-                improvement_pct=values["improvement_pct"],
-            )
-            for metric_name, values in summary_dict.items()
-        ]
+        metrics = []
+        for metric_name, values in summary_dict.items():
+            if isinstance(values, dict):
+                metrics.append(
+                    PerformanceMetric(
+                        metric_name=metric_name,
+                        ml_value=values.get("ml"),
+                        fingrid_value=values.get("fingrid"),
+                        improvement_pct=values.get("improvement_pct"),
+                    )
+                )
 
         # Get additional stats
         start_time = datetime.now(UTC) - timedelta(hours=hours_back)

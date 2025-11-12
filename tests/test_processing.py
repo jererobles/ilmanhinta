@@ -163,7 +163,7 @@ def test_prediction_dataset_builder_uses_forecasts() -> None:
                 }
             )
 
-    builder = PredictionDatasetBuilder(db=DummyDB(), station_id="101004")
+    builder = PredictionDatasetBuilder(db=DummyDB(), station_id="101004")  # type: ignore[arg-type]
 
     df = builder.build(start, end, lookback_hours=2)
 

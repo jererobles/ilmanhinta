@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import lightgbm as lgb
+import numpy as np
 import polars as pl
 
 from ilmanhinta.logging import get_logger
@@ -121,7 +122,9 @@ class ConsumptionModel:
         result = features_df.with_columns(pl.Series("predicted_consumption_mw", predictions))
 
         # Add confidence intervals (simple approximation using std)
-        std = predictions.std()
+        # Cast to numpy array to ensure .std() is available
+        predictions_arr = np.asarray(predictions)
+        std = predictions_arr.std()
         result = result.with_columns(
             [
                 (pl.col("predicted_consumption_mw") - 1.96 * std).alias("confidence_lower"),

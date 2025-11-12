@@ -1,7 +1,7 @@
 """FMI (Finnish Meteorological Institute) API client."""
 
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 
 from fmiopendata.wfs import download_stored_query
 
@@ -275,24 +275,24 @@ class FMIClient:
         # Look back a short window to get metadata; observations queries accept fmisid
         now = datetime.now(UTC)
         windows = [timedelta(hours=6), timedelta(hours=168)]
-        info: dict = {}
-        meta_snapshot: dict | None = None
+        info: dict[str, Any] = {}
+        meta_snapshot: dict[str, Any] | None = None
 
-        def _match_from_meta(meta: object, st: str) -> dict:
+        def _match_from_meta(meta: object, st: str) -> dict[str, Any]:
             """Try multiple strategies to extract station metadata from various shapes."""
             if not isinstance(meta, dict):
                 return {}
 
             # 1) Direct key match (string id)
             if st in meta and isinstance(meta[st], dict):
-                return cast(dict, meta[st])
+                return cast(dict[str, Any], meta[st])
 
             # 2) Integer key match
             if st.isdigit():
                 try:
                     st_int = int(st)
                     if st_int in meta and isinstance(meta[st_int], dict):
-                        return cast(dict, meta[st_int])
+                        return cast(dict[str, Any], meta[st_int])
                 # Ignore exceptions here; failure to convert or lookup is expected as part of multi-strategy matching.
                 except Exception:
                     pass
@@ -301,7 +301,7 @@ class FMIClient:
             try:
                 as_str_keys = {str(k): v for k, v in meta.items()}
                 if st in as_str_keys and isinstance(as_str_keys[st], dict):
-                    return cast(dict, as_str_keys[st])
+                    return cast(dict[str, Any], as_str_keys[st])
             except Exception:
                 pass
 
@@ -316,7 +316,7 @@ class FMIClient:
                         continue
                     try:
                         if str(sid) == st:
-                            return cast(dict, v)
+                            return v
                     except Exception:
                         continue
 

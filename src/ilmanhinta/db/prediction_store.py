@@ -8,13 +8,14 @@ time-series queries.
 from __future__ import annotations
 
 import os
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
 from ilmanhinta.models.fmi import PredictionOutput
 
 try:
-    import psycopg  # type: ignore
+    import psycopg
 except ModuleNotFoundError as e:  # pragma: no cover
     raise ImportError(
         "psycopg is required for prediction storage. Install with: pip install psycopg[binary]"
@@ -46,7 +47,7 @@ def _get_database_url() -> str:
 
 
 @contextmanager
-def _pg_conn():
+def _pg_conn() -> Generator[Any, None, None]:
     """Yield a Postgres connection."""
     conn = psycopg.connect(_get_database_url())
     try:

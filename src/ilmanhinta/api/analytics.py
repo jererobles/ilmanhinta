@@ -272,7 +272,8 @@ async def get_analytics_summary() -> dict[str, Any]:
                 SELECT MAX(timestamp) FROM consumption_model_predictions
             """
             )
-            latest_prediction = cur.fetchone()[0]
+            result = cur.fetchone()
+            latest_prediction = result[0] if result else None
 
         return {
             "best_model_24h": {

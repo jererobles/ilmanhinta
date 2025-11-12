@@ -9,6 +9,7 @@ Schedules:
 import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 from dagster import AssetExecutionContext, Definitions, ScheduleDefinition, asset, define_asset_job
@@ -31,14 +32,14 @@ logger = get_logger(__name__)
 
 
 @asset(group_name="data_collection")
-def collect_actual_prices(context: AssetExecutionContext) -> dict:
+def collect_actual_prices(context: AssetExecutionContext) -> dict[str, Any]:
     """Collect actual prices from Fingrid (hourly).
 
     Fetches the latest actual imbalance prices for training data.
     """
     logger.info("Collecting actual prices from Fingrid")
 
-    async def _fetch():
+    async def _fetch() -> Any:
         async with FingridClient() as client:
             # Fetch last 24 hours (to catch any delayed updates)
             data = await client.fetch_imbalance_price(hours=24)
@@ -71,14 +72,14 @@ def collect_actual_prices(context: AssetExecutionContext) -> dict:
 
 
 @asset(group_name="data_collection")
-def collect_fingrid_power_forecasts(context: AssetExecutionContext) -> dict:
+def collect_fingrid_power_forecasts(context: AssetExecutionContext) -> dict[str, Any]:
     """Collect Fingrid's official forecasts (hourly).
 
     Fetches consumption, production, and wind forecasts.
     """
     logger.info("Collecting Fingrid forecasts")
 
-    async def _fetch():
+    async def _fetch() -> Any:
         async with FingridClient() as client:
             # Fetch next 48 hours of forecasts
             forecasts = await client.fetch_forecast_data(hours=48)
@@ -153,7 +154,7 @@ def collect_fingrid_power_forecasts(context: AssetExecutionContext) -> dict:
 
 
 @asset(group_name="data_collection")
-def collect_fmi_weather_forecasts(context: AssetExecutionContext) -> dict:
+def collect_fmi_weather_forecasts(context: AssetExecutionContext) -> dict[str, Any]:
     """Collect FMI HARMONIE weather forecasts (every 6 hours).
 
     Fetches temperature, wind, pressure, etc. for next 48 hours.
@@ -202,7 +203,7 @@ def collect_fmi_weather_forecasts(context: AssetExecutionContext) -> dict:
     group_name="prediction",
     deps=["collect_fingrid_power_forecasts", "collect_fmi_weather_forecasts"],
 )
-def generate_price_predictions(context: AssetExecutionContext) -> dict:
+def generate_price_predictions(context: AssetExecutionContext) -> dict[str, Any]:
     """Generate price predictions using latest forecasts (hourly).
 
     Uses the production model to predict next 48 hours.
@@ -255,7 +256,7 @@ def generate_price_predictions(context: AssetExecutionContext) -> dict:
 
 
 @asset(group_name="analysis", deps=["generate_price_predictions"])
-def refresh_comparison_views(context: AssetExecutionContext) -> dict:
+def refresh_comparison_views(context: AssetExecutionContext) -> dict[str, Any]:
     """Refresh materialized views for comparison (daily).
 
     Updates the prediction_comparison view with latest data.
@@ -277,7 +278,7 @@ def refresh_comparison_views(context: AssetExecutionContext) -> dict:
 
 
 @asset(group_name="training")
-def retrain_price_model(context: AssetExecutionContext) -> dict:
+def retrain_price_model(context: AssetExecutionContext) -> dict[str, Any]:
     """Retrain price prediction model on updated historical data (weekly).
 
     Trains a new model on the last 60 days of data.
@@ -335,7 +336,7 @@ def retrain_price_model(context: AssetExecutionContext) -> dict:
 
 
 @asset(group_name="monitoring")
-def generate_performance_report(context: AssetExecutionContext) -> dict:
+def generate_performance_report(context: AssetExecutionContext) -> dict[str, Any]:
     """Generate performance report comparing ML vs Fingrid (daily).
 
     Analyzes the last 7 days of predictions.
@@ -353,7 +354,7 @@ def generate_performance_report(context: AssetExecutionContext) -> dict:
 
         # Log key metrics
         for metric_name, values in summary.items():
-            if values["ml"] and values["fingrid"]:
+            if isinstance(values, dict) and values.get("ml") and values.get("fingrid"):
                 improvement = values.get("improvement_pct", 0)
                 context.log.info(
                     f"{metric_name}: ML={values['ml']:.2f}, "

@@ -52,7 +52,7 @@ class PricePredictionModel:
         """
         self.model_type = model_type
         self.model_params = model_params or {}
-        self.model = None
+        self.model: Any = None
         self.feature_names: list[str] = []
         self.feature_importance: dict[str, float] = {}
         self.training_metrics: dict[str, float] = {}
@@ -221,7 +221,7 @@ class PricePredictionModel:
 
         logger.info(f"Model loaded from {path}")
 
-    def _create_model(self):
+    def _create_model(self) -> Any:
         """Create model instance based on model_type."""
         if self.model_type == "xgboost":
             if not HAS_XGBOOST:
@@ -314,7 +314,7 @@ class PricePredictionModel:
         if not mask.any():
             return np.nan
 
-        return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
+        return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100)
 
     def get_feature_importance_df(self) -> pl.DataFrame:
         """Get feature importance as a DataFrame (for analysis/visualization).
