@@ -3,7 +3,7 @@ name = "ilmanhinta"
 version = "0.1.0"
 description = "Finnish weather → energy consumption prediction ETL pipeline"
 readme = "README.md"
-requires-python = "~=3.11"
+requires-python = ">=3.11, <4"
 license = { text = "MIT" }
 authors = [{ name = "ilmanhinta team" }]
 

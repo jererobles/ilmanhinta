@@ -28,20 +28,20 @@ jobs:
 
       - name: Run ruff (lint)
         run: |
-          ruff check .
+          uv run ruff check .
 
       - name: Run ruff (format)
         run: |
-          ruff format --check .
+          uv run ruff format --check .
 
       - name: Run mypy
         run: |
-          mypy src/ilmanhinta --ignore-missing-imports
+          uv run mypy src/ilmanhinta
         continue-on-error: true # Type checking can be strict
 
       - name: Run tests
         run: |
-          pytest tests/ -v --cov=src/ilmanhinta --cov-report=xml
+          uv run pytest tests/ -v --cov=src/ilmanhinta --cov-report=xml
         env:
           FINGRID_API_KEY: "test_key"
 
