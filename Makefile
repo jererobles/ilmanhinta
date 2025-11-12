@@ -48,7 +48,7 @@ help:
 
 install:
 	@echo "📦 Installing dependencies..."
-	uv pip install -e ".[dev]"
+	uv sync --frozen
 	@if [ "$(SKIP_PRE_COMMIT_INSTALL)" = "1" ]; then \
 		echo "⏭️  Skipping pre-commit install (SKIP_PRE_COMMIT_INSTALL=1)"; \
 	else \
