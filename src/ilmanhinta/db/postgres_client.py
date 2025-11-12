@@ -6,16 +6,18 @@ production compatibility and concurrent access.
 
 from __future__ import annotations
 
+import math
 import os
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
-import pandas as pd
 import polars as pl
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.sql.expression import TextClause
 
 
 def get_database_url() -> str:
@@ -48,7 +50,7 @@ class PostgresClient:
         """
         self.database_url = database_url or get_database_url()
         self._engine: Engine | None = None
-        self._session_factory: sessionmaker | None = None
+        self._session_factory: sessionmaker[Session] | None = None
 
     @property
     def engine(self) -> Engine:
@@ -63,7 +65,7 @@ class PostgresClient:
         return self._engine
 
     @property
-    def session_factory(self) -> sessionmaker:
+    def session_factory(self) -> sessionmaker[Session]:
         """Get session factory."""
         if self._session_factory is None:
             self._session_factory = sessionmaker(bind=self.engine)
@@ -89,6 +91,18 @@ class PostgresClient:
         finally:
             session.close()
 
+    def _read_frame(
+        self,
+        query: str | TextClause,
+        params: Mapping[str, object] | None = None,
+    ) -> pl.DataFrame:
+        """Execute a query and return the result as a Polars DataFrame."""
+        stmt = query if isinstance(query, TextClause) else text(query)
+        if params:
+            stmt = stmt.bindparams(**params)
+        with self.engine.connect() as connection:
+            return pl.read_database(stmt, connection=connection)
+
     def insert_consumption(self, df: pl.DataFrame) -> int:
         """Insert electricity consumption data from Polars DataFrame.
 
@@ -100,52 +114,50 @@ class PostgresClient:
         Returns:
             Number of rows inserted/updated
         """
-        # Convert Polars to pandas for SQLAlchemy
-        pdf = df.to_pandas()
-
-        # Rename columns to match database schema
         column_mapping = {
             "timestamp": "time",
             "consumption": "consumption_mw",
             "production": "production_mw",
             "net_import": "net_import_mw",
         }
-        pdf = pdf.rename(columns=column_mapping)
+        rename_map = {old: new for old, new in column_mapping.items() if old in df.columns}
+        if rename_map:
+            df = df.rename(rename_map)
 
-        # Use batch upsert with ON CONFLICT
+        target_columns = [
+            "time",
+            "consumption_mw",
+            "production_mw",
+            "wind_mw",
+            "nuclear_mw",
+            "net_import_mw",
+        ]
+        missing = [col for col in target_columns if col not in df.columns]
+        if missing:
+            df = df.with_columns([pl.lit(None).alias(col) for col in missing])
+
+        values_list = df.select(target_columns).to_dicts()
+
+        if not values_list:
+            return 0
+
+        upsert_sql = text(
+            """
+            INSERT INTO fingrid_power_actuals (time, consumption_mw, production_mw, wind_mw, nuclear_mw, net_import_mw)
+            VALUES (:time, :consumption_mw, :production_mw, :wind_mw, :nuclear_mw, :net_import_mw)
+            ON CONFLICT (time) DO UPDATE SET
+                consumption_mw = EXCLUDED.consumption_mw,
+                production_mw = EXCLUDED.production_mw,
+                wind_mw = EXCLUDED.wind_mw,
+                nuclear_mw = EXCLUDED.nuclear_mw,
+                net_import_mw = EXCLUDED.net_import_mw
+        """
+        )
         with self.session() as session:
-            # Prepare values for bulk insert
-            values_list = []
-            for _, row in pdf.iterrows():
-                values_list.append(
-                    {
-                        "time": row.get("time"),
-                        "consumption_mw": row.get("consumption_mw"),
-                        "production_mw": row.get("production_mw"),
-                        "wind_mw": row.get("wind_mw"),
-                        "nuclear_mw": row.get("nuclear_mw"),
-                        "net_import_mw": row.get("net_import_mw"),
-                    }
-                )
+            session.execute(upsert_sql, values_list)
+            session.commit()
 
-            # Use raw SQL for efficient batch upsert
-            if values_list:
-                upsert_sql = text(
-                    """
-                    INSERT INTO fingrid_power_actuals (time, consumption_mw, production_mw, wind_mw, nuclear_mw, net_import_mw)
-                    VALUES (:time, :consumption_mw, :production_mw, :wind_mw, :nuclear_mw, :net_import_mw)
-                    ON CONFLICT (time) DO UPDATE SET
-                        consumption_mw = EXCLUDED.consumption_mw,
-                        production_mw = EXCLUDED.production_mw,
-                        wind_mw = EXCLUDED.wind_mw,
-                        nuclear_mw = EXCLUDED.nuclear_mw,
-                        net_import_mw = EXCLUDED.net_import_mw
-                """
-                )
-                session.execute(upsert_sql, values_list)
-                session.commit()
-
-            return len(pdf)
+        return len(values_list)
 
     def insert_prices(
         self,
@@ -166,28 +178,23 @@ class PostgresClient:
         Returns:
             Number of rows inserted
         """
-        pdf = df.to_pandas()
+        if "timestamp" in df.columns and "time" not in df.columns:
+            df = df.rename({"timestamp": "time"})
 
-        # Normalize timestamp column name
-        if "timestamp" in pdf.columns and "time" not in pdf.columns:
-            pdf = pdf.rename(columns={"timestamp": "time"})
+        df = df.with_columns(
+            [
+                pl.lit(area).alias("area"),
+                pl.lit(price_type).alias("price_type"),
+                pl.lit(source).alias("source"),
+            ]
+        )
 
-        pdf["area"] = area
-        pdf["price_type"] = price_type
-        pdf["source"] = source
+        target_columns = ["time", "price_eur_mwh", "area", "price_type", "source"]
+        missing = [col for col in target_columns if col not in df.columns]
+        if missing:
+            df = df.with_columns([pl.lit(None).alias(col) for col in missing])
 
-        records: list[dict[str, object]] = []
-        for _, row in pdf.iterrows():
-            records.append(
-                {
-                    "time": row.get("time"),
-                    "price_eur_mwh": row.get("price_eur_mwh"),
-                    "area": row.get("area"),
-                    "price_type": row.get("price_type"),
-                    "source": row.get("source"),
-                }
-            )
-
+        records = df.select(target_columns).to_dicts()
         if not records:
             return 0
 
@@ -203,7 +210,7 @@ class PostgresClient:
             session.execute(insert_sql, records)
             session.commit()
 
-        return len(pdf)
+        return len(records)
 
     def insert_weather(self, df: pl.DataFrame, station_id: str) -> int:
         """Insert weather observations from Polars DataFrame.
@@ -217,63 +224,64 @@ class PostgresClient:
         Returns:
             Number of rows inserted/updated
         """
-        pdf = df.to_pandas()
+        if "timestamp" in df.columns and "time" not in df.columns:
+            df = df.rename({"timestamp": "time"})
 
-        # Rename timestamp column to time if needed (database uses 'time')
-        if "timestamp" in pdf.columns and "time" not in pdf.columns:
-            pdf = pdf.rename(columns={"timestamp": "time"})
+        df = df.with_columns(pl.lit(station_id).alias("station_id"))
 
-        pdf["station_id"] = station_id
+        target_columns = [
+            "time",
+            "station_id",
+            "temperature_c",
+            "humidity_percent",
+            "wind_speed_ms",
+            "wind_direction",
+            "pressure_hpa",
+            "precipitation_mm",
+            "cloud_cover",
+        ]
+        missing = [col for col in target_columns if col not in df.columns]
+        if missing:
+            df = df.with_columns([pl.lit(None).alias(col) for col in missing])
 
-        # Use batch upsert with ON CONFLICT
+        values_list: list[dict[str, object]] = []
+        for row in df.select(target_columns).to_dicts():
+            cloud_cover = row.get("cloud_cover")
+            if isinstance(cloud_cover, float):
+                cloud_cover = None if math.isnan(cloud_cover) else int(cloud_cover)
+            elif isinstance(cloud_cover, int):
+                cloud_cover = int(cloud_cover)
+            else:
+                cloud_cover = None if cloud_cover is None else cloud_cover
+
+            row["cloud_cover"] = cloud_cover
+            values_list.append(row)
+
+        if not values_list:
+            return 0
+
+        upsert_sql = text(
+            """
+            INSERT INTO fmi_weather_observations
+            (time, station_id, temperature_c, humidity_percent, wind_speed_ms,
+             wind_direction, pressure_hpa, precipitation_mm, cloud_cover)
+            VALUES (:time, :station_id, :temperature_c, :humidity_percent, :wind_speed_ms,
+                    :wind_direction, :pressure_hpa, :precipitation_mm, :cloud_cover)
+            ON CONFLICT (time, station_id, data_type) DO UPDATE SET
+                temperature_c = EXCLUDED.temperature_c,
+                humidity_percent = EXCLUDED.humidity_percent,
+                wind_speed_ms = EXCLUDED.wind_speed_ms,
+                wind_direction = EXCLUDED.wind_direction,
+                pressure_hpa = EXCLUDED.pressure_hpa,
+                precipitation_mm = EXCLUDED.precipitation_mm,
+                cloud_cover = EXCLUDED.cloud_cover
+        """
+        )
         with self.session() as session:
-            # Prepare values for bulk insert
-            values_list = []
-            for _, row in pdf.iterrows():
-                # Convert cloud_cover to int, handling NaN
-                cloud_cover = row.get("cloud_cover")
-                if pd.isna(cloud_cover):
-                    cloud_cover = None
-                elif isinstance(cloud_cover, (int, float)):
-                    cloud_cover = int(cloud_cover) if not pd.isna(cloud_cover) else None
+            session.execute(upsert_sql, values_list)
+            session.commit()
 
-                values_list.append(
-                    {
-                        "time": row.get("time"),
-                        "station_id": row.get("station_id"),
-                        "temperature_c": row.get("temperature_c"),
-                        "humidity_percent": row.get("humidity_percent"),
-                        "wind_speed_ms": row.get("wind_speed_ms"),
-                        "wind_direction": row.get("wind_direction"),
-                        "pressure_hpa": row.get("pressure_hpa"),
-                        "precipitation_mm": row.get("precipitation_mm"),
-                        "cloud_cover": cloud_cover,
-                    }
-                )
-
-            # Use raw SQL for efficient batch upsert
-            if values_list:
-                upsert_sql = text(
-                    """
-                    INSERT INTO fmi_weather_observations
-                    (time, station_id, temperature_c, humidity_percent, wind_speed_ms,
-                     wind_direction, pressure_hpa, precipitation_mm, cloud_cover)
-                    VALUES (:time, :station_id, :temperature_c, :humidity_percent, :wind_speed_ms,
-                            :wind_direction, :pressure_hpa, :precipitation_mm, :cloud_cover)
-                    ON CONFLICT (time, station_id, data_type) DO UPDATE SET
-                        temperature_c = EXCLUDED.temperature_c,
-                        humidity_percent = EXCLUDED.humidity_percent,
-                        wind_speed_ms = EXCLUDED.wind_speed_ms,
-                        wind_direction = EXCLUDED.wind_direction,
-                        pressure_hpa = EXCLUDED.pressure_hpa,
-                        precipitation_mm = EXCLUDED.precipitation_mm,
-                        cloud_cover = EXCLUDED.cloud_cover
-                """
-                )
-                session.execute(upsert_sql, values_list)
-                session.commit()
-
-            return len(pdf)
+        return len(values_list)
 
     def insert_weather_forecast(
         self,
@@ -296,24 +304,26 @@ class PostgresClient:
         Returns:
             Number of rows inserted
         """
-        pdf = df.to_pandas()
+        if "time" in df.columns and "forecast_time" not in df.columns:
+            df = df.rename({"time": "forecast_time"})
 
-        # Rename time column if needed
-        if "time" in pdf.columns and "forecast_time" not in pdf.columns:
-            pdf = pdf.rename(columns={"time": "forecast_time"})
-
-        pdf["station_id"] = station_id
-        pdf["forecast_model"] = forecast_model
-        pdf["generated_at"] = generated_at or datetime.now(UTC)
-
-        pdf.to_sql(
-            "fmi_weather_forecasts",
-            con=self.engine,
-            if_exists="append",
-            index=False,
-            method="multi",
+        generated_at = generated_at or datetime.now(UTC)
+        df = df.with_columns(
+            [
+                pl.lit(station_id).alias("station_id"),
+                pl.lit(forecast_model).alias("forecast_model"),
+                pl.lit(generated_at).alias("generated_at"),
+            ]
         )
-        return len(pdf)
+
+        if df.is_empty():
+            return 0
+
+        return df.write_database(
+            table_name="fmi_weather_forecasts",
+            connection=self.engine,
+            if_table_exists="append",
+        )
 
     def insert_fingrid_forecast(
         self,
@@ -336,26 +346,28 @@ class PostgresClient:
         Returns:
             Number of rows inserted
         """
-        pdf = df.to_pandas()
+        if "time" in df.columns and "forecast_time" not in df.columns:
+            df = df.rename({"time": "forecast_time"})
 
-        # Rename columns if needed
-        if "time" in pdf.columns and "forecast_time" not in pdf.columns:
-            pdf = pdf.rename(columns={"time": "forecast_time"})
-
-        pdf["forecast_type"] = forecast_type
-        pdf["unit"] = unit
+        generated_at = generated_at or datetime.now(UTC)
+        additions = [
+            pl.lit(forecast_type).alias("forecast_type"),
+            pl.lit(unit).alias("unit"),
+            pl.lit(generated_at).alias("generated_at"),
+        ]
         if update_frequency:
-            pdf["update_frequency"] = update_frequency
-        pdf["generated_at"] = generated_at or datetime.now(UTC)
+            additions.append(pl.lit(update_frequency).alias("update_frequency"))
 
-        pdf.to_sql(
-            "fingrid_power_forecasts",
-            con=self.engine,
-            if_exists="append",
-            index=False,
-            method="multi",
+        df = df.with_columns(additions)
+
+        if df.is_empty():
+            return 0
+
+        return df.write_database(
+            table_name="fingrid_power_forecasts",
+            connection=self.engine,
+            if_table_exists="append",
         )
-        return len(pdf)
 
     def insert_predictions(
         self,
@@ -379,35 +391,38 @@ class PostgresClient:
         Returns:
             Number of rows inserted
         """
-        pdf = df.to_pandas()
+        if "time" in df.columns and "prediction_time" not in df.columns:
+            df = df.rename({"time": "prediction_time"})
 
-        # Rename columns if needed
-        if "time" in pdf.columns and "prediction_time" not in pdf.columns:
-            pdf = pdf.rename(columns={"time": "prediction_time"})
-
-        # Handle Prophet column names
         column_mapping = {
             "yhat": "predicted_price_eur_mwh",
             "yhat_lower": "confidence_lower",
             "yhat_upper": "confidence_upper",
         }
-        pdf = pdf.rename(columns=column_mapping)
+        rename_map = {old: new for old, new in column_mapping.items() if old in df.columns}
+        if rename_map:
+            df = df.rename(rename_map)
 
-        pdf["model_type"] = model_type
+        generated_at = generated_at or datetime.now(UTC)
+        additions = [
+            pl.lit(model_type).alias("model_type"),
+            pl.lit(generated_at).alias("generated_at"),
+        ]
         if model_version:
-            pdf["model_version"] = model_version
-        pdf["generated_at"] = generated_at or datetime.now(UTC)
+            additions.append(pl.lit(model_version).alias("model_version"))
         if training_end_date:
-            pdf["training_end_date"] = training_end_date
+            additions.append(pl.lit(training_end_date).alias("training_end_date"))
 
-        pdf.to_sql(
-            "price_model_predictions",
-            con=self.engine,
-            if_exists="append",
-            index=False,
-            method="multi",
+        df = df.with_columns(additions)
+
+        if df.is_empty():
+            return 0
+
+        return df.write_database(
+            table_name="price_model_predictions",
+            connection=self.engine,
+            if_table_exists="append",
         )
-        return len(pdf)
 
     def get_fmi_weather_forecasts(
         self,
@@ -455,13 +470,7 @@ class PostgresClient:
 
         query += " ORDER BY forecast_time, station_id, generated_at DESC"
 
-        with self.session() as session:
-            result = session.execute(text(query), params)
-            rows = result.fetchall()
-            if not rows:
-                return pl.DataFrame()
-            pdf = pd.DataFrame(rows, columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(query, params if params else None)
 
     def get_fingrid_power_forecasts(
         self,
@@ -495,13 +504,7 @@ class PostgresClient:
 
         query += " ORDER BY forecast_time, forecast_type, generated_at DESC"
 
-        with self.session() as session:
-            result = session.execute(text(query), params)
-            rows = result.fetchall()
-            if not rows:
-                return pl.DataFrame()
-            pdf = pd.DataFrame(rows, columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(query, params if params else None)
 
     def get_consumption(
         self,
@@ -528,10 +531,7 @@ class PostgresClient:
         """
         )
 
-        with self.session() as session:
-            result = session.execute(query, {"start_time": start_time, "end_time": end_time})
-            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(query, {"start_time": start_time, "end_time": end_time})
 
     def get_prices(
         self,
@@ -561,12 +561,9 @@ class PostgresClient:
         """
         )
 
-        with self.session() as session:
-            result = session.execute(
-                query, {"start_time": start_time, "end_time": end_time, "area": area}
-            )
-            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(
+            query, {"start_time": start_time, "end_time": end_time, "area": area}
+        )
 
     def get_weather(
         self,
@@ -622,10 +619,7 @@ class PostgresClient:
             )
             params = {"start_time": start_time, "end_time": end_time}
 
-        with self.session() as session:
-            result = session.execute(query, params)
-            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(query, params)
 
     def get_latest_predictions(
         self,
@@ -664,10 +658,7 @@ class PostgresClient:
         """
         )
 
-        with self.session() as session:
-            result = session.execute(query, {"model_type": model_type, "limit": limit})
-            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(query, {"model_type": model_type, "limit": limit})
 
     def get_joined_training_data(
         self,
@@ -720,10 +711,7 @@ class PostgresClient:
         """
         )
 
-        with self.session() as session:
-            result = session.execute(query, {"start_time": start_time, "end_time": end_time})
-            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(query, {"start_time": start_time, "end_time": end_time})
 
     def get_prediction_comparison(
         self,
@@ -771,14 +759,11 @@ class PostgresClient:
         """
         )
 
-        with self.session() as session:
-            result = session.execute(
-                query, {"start_time": start_time, "end_time": end_time, "limit": limit}
-            )
-            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(
+            query, {"start_time": start_time, "end_time": end_time, "limit": limit}
+        )
 
-    def get_performance_summary(self, hours_back: int = 24) -> dict[str, any]:
+    def get_performance_summary(self, hours_back: int = 24) -> dict[str, Any]:
         """Get performance summary comparing ML model vs Fingrid forecasts.
 
         Args:
@@ -794,7 +779,7 @@ class PostgresClient:
             rows = result.fetchall()
 
             # Convert to dictionary
-            summary = {}
+            summary: dict[str, Any] = {}
             for row in rows:
                 metric = row[0]
                 ml_value = row[1]
@@ -846,10 +831,7 @@ class PostgresClient:
         """
         )
 
-        with self.session() as session:
-            result = session.execute(query, {"start_time": start_time, "end_time": end_time})
-            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(query, {"start_time": start_time, "end_time": end_time})
 
     def refresh_materialized_views(self) -> None:
         """Refresh all materialized views for better query performance."""
@@ -907,9 +889,9 @@ class PostgresClient:
             ).scalar()
 
             return {
-                "consumption_rows": consumption_count,
-                "prices_rows": prices_count,
-                "weather_rows": weather_count,
-                "predictions_rows": predictions_count,
-                "db_size_bytes": db_size,
+                "consumption_rows": int(consumption_count or 0),
+                "prices_rows": int(prices_count or 0),
+                "weather_rows": int(weather_count or 0),
+                "predictions_rows": int(predictions_count or 0),
+                "db_size_bytes": int(db_size or 0),
             }

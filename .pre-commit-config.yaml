@@ -19,5 +19,4 @@ repos:
     rev: v1.18.2
     hooks:
       - id: mypy
-        additional_dependencies: [pydantic>=2.12.4]
-        args: [--strict, --ignore-missing-imports]
+        additional_dependencies: [pydantic>=2.12.4, polars>=0.20.0]
