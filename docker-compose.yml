@@ -125,7 +125,7 @@ services:
     image: burningalchemist/sql_exporter:latest
     command: ["--config.file=/config.yml"]
     environment:
-      SQLEXPORTER_TARGET_DSN: "postgresql://api:${POSTGRES_PASSWORD}@postgres:5432/ilmanhinta?sslmode=disable"
+      SQLEXPORTER_TARGET_DSN: "${DATABASE_URL}?sslmode=disable"
     volumes:
       - ./sql_exporter.yml:/config.yml:ro
     ports:

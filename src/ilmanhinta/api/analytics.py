@@ -11,7 +11,7 @@ import psycopg
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from ilmanhinta.db.prediction_store import _get_database_url
+from ilmanhinta.db.postgres_client import get_database_url
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -104,7 +104,7 @@ async def get_daily_accuracy(
     """
 
     try:
-        with psycopg.connect(_get_database_url()) as conn, conn.cursor() as cur:
+        with psycopg.connect(get_database_url()) as conn, conn.cursor() as cur:
             cur.execute(query, params)
             rows = cur.fetchall()
 
@@ -153,7 +153,7 @@ async def compare_models() -> list[ModelComparison]:
     """
 
     try:
-        with psycopg.connect(_get_database_url()) as conn, conn.cursor() as cur:
+        with psycopg.connect(get_database_url()) as conn, conn.cursor() as cur:
             cur.execute(query)
             rows = cur.fetchall()
 
@@ -213,7 +213,7 @@ async def get_hourly_consumption(
     """
 
     try:
-        with psycopg.connect(_get_database_url()) as conn, conn.cursor() as cur:
+        with psycopg.connect(get_database_url()) as conn, conn.cursor() as cur:
             cur.execute(query, (hours,))
             rows = cur.fetchall()
 
@@ -243,7 +243,7 @@ async def get_analytics_summary() -> dict[str, Any]:
         Summary statistics including best model, data coverage, and health metrics
     """
     try:
-        with psycopg.connect(_get_database_url()) as conn, conn.cursor() as cur:
+        with psycopg.connect(get_database_url()) as conn, conn.cursor() as cur:
             # Get best performing model from last 24h
             cur.execute(
                 """

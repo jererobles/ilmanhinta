@@ -96,7 +96,7 @@ clean:
 
 run-api: check-env
 	@echo "🚀 Starting FastAPI server..."
-	uvicorn ilmanhinta.api.main:app --reload --host 0.0.0.0 --port 8000
+	uvicorn ilmanhinta.api.main:app --reload --host 0.0.0.0 --port 8001
 
 run-dagster: check-env
 	@echo "🔧 Starting Dagster UI..."

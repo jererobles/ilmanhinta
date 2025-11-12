@@ -5,7 +5,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import create_engine, pool
 
-from ilmanhinta.db.prediction_store import _get_database_url
+from ilmanhinta.db.postgres_client import get_database_url
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -36,7 +36,7 @@ def run_migrations_offline() -> None:
 
     """
     # Get database URL from environment variable
-    url = _get_database_url()
+    url = get_database_url()
 
     context.configure(
         url=url,
@@ -57,7 +57,7 @@ def run_migrations_online() -> None:
 
     """
     # Get database URL from environment variable
-    url = _get_database_url()
+    url = get_database_url()
 
     connectable = create_engine(
         url,

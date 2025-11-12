@@ -1,11 +1,14 @@
 """FastAPI application exposing precomputed energy consumption predictions."""
 
 import os
+import pathlib
 import time
 from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
@@ -15,7 +18,7 @@ from ilmanhinta.logging import configure_observability, get_logger, instrument_f
 from ilmanhinta.models.fmi import PredictionOutput
 
 from .analytics import router as analytics_router
-from .comparison import router as comparison_router
+from .dagster_triggers import router as dagster_router
 from .metrics import (
     api_request_duration_seconds,
     api_requests_total,
@@ -23,6 +26,7 @@ from .metrics import (
     prediction_value_mw,
     predictions_total,
 )
+from .prices import router as prices_router
 
 # Initialize FastAPI
 app = FastAPI(
@@ -38,9 +42,17 @@ logger = get_logger(__name__)
 configure_observability()
 instrument_fastapi(app)
 
+# Configure templates and static files
+BASE_PATH = pathlib.Path(__file__).parent
+templates = Jinja2Templates(directory=str(BASE_PATH / "templates"))
+
+# Mount static files
+app.mount("/static", StaticFiles(directory=str(BASE_PATH / "static")), name="static")
+
 # Include routers
 app.include_router(analytics_router)
-app.include_router(comparison_router)
+app.include_router(prices_router)
+app.include_router(dagster_router)
 
 DEFAULT_MODEL_TYPE = os.getenv("PREDICTION_MODEL_TYPE", "lightgbm")
 
@@ -118,9 +130,15 @@ def _observe_predictions(predictions: list[PredictionOutput]) -> None:
         model_version_info.labels(version=peak.model_version).set(1)
 
 
-@app.get("/", response_model=HealthCheck)
-async def root() -> HealthCheck:
-    """Root endpoint with health check."""
+@app.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request) -> HTMLResponse:
+    """Serve the main dashboard web interface."""
+    return templates.TemplateResponse("dashboard.html", {"request": request})
+
+
+@app.get("/api/health", response_model=HealthCheck)
+async def api_root() -> HealthCheck:
+    """API health check endpoint."""
     return _prediction_status()
 
 

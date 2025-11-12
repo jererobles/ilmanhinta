@@ -1,9 +1,17 @@
-"""On-demand backfill for Fingrid/FMI datasets used by Ilmanhinta."""
+"""Data ingestion/backfill service for Fingrid/FMI used by Ilmanhinta.
+
+This module exposes a BackfillService class that centralizes fetching from
+Fingrid/FMI lower-level clients and persisting into PostgreSQL via
+PostgresClient. It can be used in two ways:
+- As a standalone CLI for long-interval, one-off backfills
+- As a library from Dagster for short-interval, on-demand scraping
+"""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -13,7 +21,7 @@ import polars as pl
 from ilmanhinta.clients.fingrid import FingridClient
 from ilmanhinta.clients.fmi import FMIClient
 from ilmanhinta.db.postgres_client import PostgresClient
-from ilmanhinta.logging import get_logger
+from ilmanhinta.logging import configure_observability, get_logger
 from ilmanhinta.models.fingrid import FingridDataPoint, FingridDatasets
 from ilmanhinta.processing.joins import TemporalJoiner
 
@@ -22,6 +30,9 @@ DEFAULT_CHUNK_HOURS = 240  # keep Fingrid requests <10k data points
 DEFAULT_PAGE_SIZE = 10_000
 DEFAULT_PRICE_BUFFER_HOURS = 168  # lag features need trailing week
 TARGET_CHOICES: tuple[str, ...] = ("actuals", "prices", "forecasts", "weather")
+REQUESTS_PER_MINUTE = 10
+
+configure_observability()
 logger = get_logger(__name__)
 
 
@@ -111,6 +122,12 @@ def _parse_args() -> argparse.Namespace:
         help="Page size used for Fingrid API calls (default: 10000).",
     )
     parser.add_argument(
+        "--requests-per-minute",
+        type=int,
+        default=REQUESTS_PER_MINUTE,
+        help="Max Fingrid requests per minute for pacing (default: 10).",
+    )
+    parser.add_argument(
         "--station-id",
         type=str,
         default=None,
@@ -134,197 +151,272 @@ def _chunk_ranges(
         cursor = chunk_end
 
 
-async def _fetch_dataset_points(
-    client: FingridClient,
-    dataset_id: int,
-    start_time: datetime,
-    end_time: datetime,
-    *,
-    chunk_hours: int,
-    page_size: int,
-    label: str,
-) -> list[FingridDataPoint]:
-    """Fetch a Fingrid dataset in manageable chunks to avoid API hard limits."""
-    points: list[FingridDataPoint] = []
-    for chunk_start, chunk_end in _chunk_ranges(start_time, end_time, chunk_hours):
-        logger.info(
-            f"Fetching {label} dataset {dataset_id} "
-            f"from {chunk_start.isoformat()} to {chunk_end.isoformat()}"
-        )
-        data = await client.fetch_data(
-            dataset_id=dataset_id,
-            start_time=chunk_start,
-            end_time=chunk_end,
-            page_size=page_size,
-        )
-        points.extend(data)
+class BackfillService:
+    """High-level data ingestion/backfill orchestrator.
 
-        # Gentle pause between chunks to dodge 429s
-        if chunk_end < end_time:
-            await asyncio.sleep(0.25)
+    Wraps Fingrid/FMI clients and handles persistence to PostgreSQL.
+    """
 
-    points.sort(key=lambda p: p.start_time)
-    logger.info(f"Fetched {len(points)} points for {label}")
-    return points
+    def __init__(
+        self,
+        *,
+        db: PostgresClient | None = None,
+        fingrid_client: FingridClient | None = None,
+        fmi_client: FMIClient | None = None,
+        chunk_hours: int = DEFAULT_CHUNK_HOURS,
+        page_size: int = DEFAULT_PAGE_SIZE,
+        price_buffer_hours: int = DEFAULT_PRICE_BUFFER_HOURS,
+        requests_per_minute: int = REQUESTS_PER_MINUTE,
+    ) -> None:
+        self.db = db or PostgresClient()
+        self._owns_db = db is None
 
+        self.fingrid_client = fingrid_client
+        self._owns_fg = fingrid_client is None
+        self.fmi_client = fmi_client or FMIClient()
 
-async def _backfill_actuals(
-    client: FingridClient,
-    db: PostgresClient,
-    start_time: datetime,
-    end_time: datetime,
-    chunk_hours: int,
-    page_size: int,
-) -> int:
-    """Backfill electricity actuals (consumption/production/wind/etc.)."""
-    dataset_map: dict[str, list[FingridDataPoint]] = {}
+        self.chunk_hours = chunk_hours
+        self.page_size = page_size
+        self.price_buffer_hours = price_buffer_hours
 
-    for key, dataset_id in ACTUAL_DATASETS.items():
-        points = await _fetch_dataset_points(
-            client,
-            dataset_id,
-            start_time,
+        # pacing
+        self._req_interval = 60 / max(1, requests_per_minute)
+
+    async def __aenter__(self) -> BackfillService:
+        if self.fingrid_client is None:
+            self.fingrid_client = FingridClient()
+        # Enter fingrid client context if we own it
+        if self._owns_fg and hasattr(self.fingrid_client, "__aenter__"):
+            await self.fingrid_client.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        # Close fingrid client if we created it
+        if self._owns_fg and self.fingrid_client is not None:
+            with contextlib.suppress(Exception):
+                await self.fingrid_client.__aexit__(None, None, None)
+        # Close DB if we created it
+        if self._owns_db:
+            with contextlib.suppress(Exception):
+                self.db.close()
+
+    async def _fetch_dataset_points(
+        self,
+        dataset_id: int,
+        start_time: datetime,
+        end_time: datetime,
+        *,
+        label: str,
+    ) -> list[FingridDataPoint]:
+        """Fetch a Fingrid dataset in manageable chunks to avoid API hard limits."""
+        assert self.fingrid_client is not None, "Fingrid client not initialized"
+        points: list[FingridDataPoint] = []
+        for chunk_start, chunk_end in _chunk_ranges(start_time, end_time, self.chunk_hours):
+            logger.info(
+                f"Fetching {label} dataset {dataset_id} "
+                f"from {chunk_start.isoformat()} to {chunk_end.isoformat()}"
+            )
+            request_start = asyncio.get_running_loop().time()
+            data = await self.fingrid_client.fetch_data(
+                dataset_id=dataset_id,
+                start_time=chunk_start,
+                end_time=chunk_end,
+                page_size=self.page_size,
+            )
+            elapsed = asyncio.get_running_loop().time() - request_start
+            remaining_quota = self._req_interval - elapsed
+            points.extend(data)
+
+            if chunk_end < end_time and remaining_quota > 0:
+                await asyncio.sleep(remaining_quota)
+
+        points.sort(key=lambda p: p.start_time)
+        logger.info(f"Fetched {len(points)} points for {label}")
+        return points
+
+    async def ingest_actuals(
+        self, start_time: datetime, end_time: datetime
+    ) -> tuple[pl.DataFrame, int]:
+        """Fetch and insert electricity actuals into DB; return merged DataFrame and rows inserted."""
+        dataset_map: dict[str, list[FingridDataPoint]] = {}
+        for key, dataset_id in ACTUAL_DATASETS.items():
+            points = await self._fetch_dataset_points(
+                dataset_id,
+                start_time,
+                end_time,
+                label=f"{key} actuals",
+            )
+            if points:
+                dataset_map[key] = points
+            else:
+                logger.warning(f"No {key} data returned for requested window")
+
+        if not dataset_map:
+            logger.warning("Skipping consumption insert: no actual datasets fetched")
+            return pl.DataFrame(), 0
+
+        df = TemporalJoiner.merge_fingrid_datasets(dataset_map)
+        if df.is_empty():
+            logger.warning("Merged actuals dataframe is empty")
+            return df, 0
+
+        inserted = self.db.insert_consumption(df)
+        logger.info(f"Inserted {inserted} merged actual rows")
+        return df, inserted
+
+    async def ingest_prices(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        *,
+        buffer_hours: int | None = None,
+    ) -> tuple[pl.DataFrame, int]:
+        """Fetch and insert imbalance prices; return DataFrame and rows inserted."""
+        if buffer_hours is None:
+            buffer_hours = self.price_buffer_hours
+        if buffer_hours < 0:
+            raise ValueError("price buffer must be non-negative")
+
+        price_start = start_time - timedelta(hours=buffer_hours)
+        points = await self._fetch_dataset_points(
+            FingridDatasets.PRICE_IMBALANCE,
+            price_start,
             end_time,
-            chunk_hours=chunk_hours,
-            page_size=page_size,
-            label=f"{key} actuals",
-        )
-        if points:
-            dataset_map[key] = points
-        else:
-            logger.warning(f"No {key} data returned for requested window")
-
-    if not dataset_map:
-        logger.warning("Skipping consumption insert: no actual datasets fetched")
-        return 0
-
-    df = TemporalJoiner.merge_fingrid_datasets(dataset_map)
-    if df.is_empty():
-        logger.warning("Merged actuals dataframe is empty")
-        return 0
-
-    inserted = db.insert_consumption(df)
-    logger.info(f"Inserted {inserted} merged actual rows")
-    return inserted
-
-
-async def _backfill_prices(
-    client: FingridClient,
-    db: PostgresClient,
-    start_time: datetime,
-    end_time: datetime,
-    *,
-    chunk_hours: int,
-    page_size: int,
-    buffer_hours: int,
-) -> int:
-    """Backfill imbalance prices with extra history for lag features."""
-    if buffer_hours < 0:
-        raise ValueError("price buffer must be non-negative")
-
-    price_start = start_time - timedelta(hours=buffer_hours)
-    points = await _fetch_dataset_points(
-        client,
-        FingridDatasets.PRICE_IMBALANCE,
-        price_start,
-        end_time,
-        chunk_hours=chunk_hours,
-        page_size=page_size,
-        label="imbalance prices",
-    )
-
-    if not points:
-        logger.warning("No price data returned for requested window")
-        return 0
-
-    df = pl.DataFrame(
-        {
-            "time": [point.start_time for point in points],
-            "price_eur_mwh": [point.value for point in points],
-        }
-    )
-    inserted = db.insert_prices(df, area="FI", price_type="imbalance", source="fingrid")
-    logger.info(f"Inserted {inserted} price rows ({buffer_hours} buffer hrs)")
-    return inserted
-
-
-async def _backfill_forecasts(
-    client: FingridClient,
-    db: PostgresClient,
-    start_time: datetime,
-    end_time: datetime,
-    *,
-    chunk_hours: int,
-    page_size: int,
-    forecast_types: list[str],
-) -> int:
-    """Backfill Fingrid official forecasts used as ML features."""
-    generation_timestamp = datetime.now(UTC)
-    total = 0
-
-    for forecast_type in forecast_types:
-        source = FORECAST_SOURCES[forecast_type]
-        points = await _fetch_dataset_points(
-            client,
-            source.dataset_id,
-            start_time,
-            end_time,
-            chunk_hours=chunk_hours,
-            page_size=page_size,
-            label=f"{forecast_type} forecasts",
+            label="imbalance prices",
         )
 
         if not points:
-            logger.warning(f"No {forecast_type} forecasts returned")
-            continue
+            logger.warning("No price data returned for requested window")
+            return pl.DataFrame(), 0
 
         df = pl.DataFrame(
             {
-                "forecast_time": [point.start_time for point in points],
-                "value": [point.value for point in points],
+                "time": [point.start_time for point in points],
+                "price_eur_mwh": [point.value for point in points],
             }
         )
-        inserted = db.insert_fingrid_forecast(
-            df,
-            forecast_type=source.forecast_type,
-            unit=source.unit,
-            update_frequency=source.update_frequency,
-            generated_at=generation_timestamp,
+        inserted = self.db.insert_prices(df, area="FI", price_type="imbalance", source="fingrid")
+        logger.info(f"Inserted {inserted} price rows ({buffer_hours} buffer hrs)")
+        return df, inserted
+
+    async def ingest_forecasts(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        *,
+        forecast_types: list[str] | None = None,
+    ) -> int:
+        """Fetch and insert Fingrid forecasts; return total rows inserted."""
+        generation_timestamp = datetime.now(UTC)
+        total = 0
+
+        types = list(forecast_types or FORECAST_SOURCES.keys())
+        for forecast_type in types:
+            source = FORECAST_SOURCES[forecast_type]
+            points = await self._fetch_dataset_points(
+                source.dataset_id,
+                start_time,
+                end_time,
+                label=f"{forecast_type} forecasts",
+            )
+
+            if not points:
+                logger.warning(f"No {forecast_type} forecasts returned")
+                continue
+
+            df = pl.DataFrame(
+                {
+                    "forecast_time": [point.start_time for point in points],
+                    "value": [point.value for point in points],
+                }
+            )
+            inserted = self.db.insert_fingrid_forecast(
+                df,
+                forecast_type=source.forecast_type,
+                unit=source.unit,
+                update_frequency=source.update_frequency,
+                generated_at=generation_timestamp,
+            )
+            logger.info(f"Inserted {inserted} {forecast_type} forecast rows")
+            total += inserted
+
+        return total
+
+    async def ingest_weather(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        *,
+        station_id: str | None = None,
+    ) -> tuple[pl.DataFrame, int]:
+        """Fetch and insert FMI weather observations; return DataFrame and rows inserted."""
+        client = self.fmi_client if station_id is None else FMIClient(station_id=station_id)
+        logger.info(
+            f"Fetching FMI observations for station {client.station_id} "
+            f"({start_time.isoformat()} -> {end_time.isoformat()})"
         )
-        logger.info(f"Inserted {inserted} {forecast_type} forecast rows")
-        total += inserted
 
-    return total
+        weather_data = await asyncio.to_thread(client.fetch_observations, start_time, end_time)
+        if not weather_data.observations:
+            logger.warning(f"No weather observations returned for {client.station_id}")
+            return pl.DataFrame(), 0
 
+        df = TemporalJoiner.fmi_to_polars(weather_data.observations)
+        if df.is_empty():
+            logger.warning("Weather dataframe empty after conversion")
+            return df, 0
 
-async def _backfill_weather(
-    db: PostgresClient,
-    start_time: datetime,
-    end_time: datetime,
-    *,
-    station_id: str | None,
-) -> int:
-    """Backfill FMI weather observations (actuals)."""
-    client = FMIClient(station_id=station_id)
-    logger.info(
-        f"Fetching FMI observations for station {client.station_id} "
-        f"({start_time.isoformat()} -> {end_time.isoformat()})"
-    )
+        df = df.with_columns(pl.lit(client.station_id).alias("station_id"))
+        inserted = self.db.insert_weather(df, station_id=client.station_id)
+        logger.info(f"Inserted {inserted} weather rows for station {client.station_id}")
+        return df, inserted
 
-    weather_data = await asyncio.to_thread(client.fetch_observations, start_time, end_time)
-    if not weather_data.observations:
-        logger.warning(f"No weather observations returned for {client.station_id}")
-        return 0
+    async def ingest_weather_forecast(
+        self,
+        *,
+        horizon_hours: int = 48,
+        station_id: str | None = None,
+        forecast_model: str = "harmonie",
+    ) -> tuple[pl.DataFrame, int]:
+        """Fetch and insert FMI weather forecasts; return DataFrame and rows inserted.
 
-    df = TemporalJoiner.fmi_to_polars(weather_data.observations)
-    if df.is_empty():
-        logger.warning("Weather dataframe empty after conversion")
-        return 0
+        Args:
+            horizon_hours: How many hours ahead to fetch
+            station_id: Optional station override (defaults to settings)
+            forecast_model: Model name metadata for storage
+        """
+        client = self.fmi_client if station_id is None else FMIClient(station_id=station_id)
+        weather_fcst = await asyncio.to_thread(client.fetch_forecast, hours=horizon_hours)
 
-    df = df.with_columns(pl.lit(client.station_id).alias("station_id"))
-    inserted = db.insert_weather(df, station_id=client.station_id)
-    logger.info(f"Inserted {inserted} weather rows for station {client.station_id}")
-    return inserted
+        if not weather_fcst.observations:
+            logger.warning("No FMI weather forecasts available")
+            return pl.DataFrame(), 0
+
+        # Build DataFrame similar to existing usage in jobs
+        records = [
+            {
+                "forecast_time": obs.timestamp,
+                "temperature_c": obs.temperature,
+                "wind_speed_ms": obs.wind_speed,
+                "pressure_hpa": obs.pressure,
+                "cloud_cover": obs.cloud_cover,
+                "humidity_percent": obs.humidity,
+            }
+            for obs in weather_fcst.observations
+            if obs.temperature is not None
+        ]
+        df = pl.DataFrame(records) if records else pl.DataFrame()
+        if df.is_empty():
+            logger.warning("Weather forecast dataframe is empty after conversion")
+            return df, 0
+
+        rows = self.db.insert_weather_forecast(
+            df,
+            station_id=client.station_id,
+            forecast_model=forecast_model,
+        )
+        logger.info(f"Inserted {rows} weather forecast rows for station {client.station_id}")
+        return df, rows
 
 
 async def run_backfill() -> None:
@@ -346,54 +438,29 @@ async def run_backfill() -> None:
     )
 
     summary: dict[str, int] = {}
-    db = PostgresClient()
 
-    try:
-        fingrid_targets = {"actuals", "prices", "forecasts"}
-        need_fingrid = any(target in fingrid_targets for target in targets)
-
-        if need_fingrid:
-            async with FingridClient() as fingrid_client:
-                if "actuals" in targets:
-                    summary["actuals"] = await _backfill_actuals(
-                        fingrid_client,
-                        db,
-                        start_time,
-                        end_time,
-                        args.chunk_hours,
-                        args.page_size,
-                    )
-
-                if "prices" in targets:
-                    summary["prices"] = await _backfill_prices(
-                        fingrid_client,
-                        db,
-                        start_time,
-                        end_time,
-                        chunk_hours=args.chunk_hours,
-                        page_size=args.page_size,
-                        buffer_hours=args.price_buffer_hours,
-                    )
-
-                if "forecasts" in targets:
-                    summary["forecasts"] = await _backfill_forecasts(
-                        fingrid_client,
-                        db,
-                        start_time,
-                        end_time,
-                        chunk_hours=args.chunk_hours,
-                        page_size=args.page_size,
-                        forecast_types=args.forecast_types,
-                    )
-        elif {"actuals", "prices", "forecasts"} & set(targets):
-            raise RuntimeError("Fingrid targets requested but Fingrid client unavailable")
-
-        if "weather" in targets:
-            summary["weather"] = await _backfill_weather(
-                db, start_time, end_time, station_id=args.station_id
+    async with BackfillService(
+        chunk_hours=args.chunk_hours,
+        page_size=args.page_size,
+        price_buffer_hours=args.price_buffer_hours,
+        requests_per_minute=args.requests_per_minute,
+    ) as svc:
+        if "actuals" in targets:
+            _df, inserted = await svc.ingest_actuals(start_time, end_time)
+            summary["actuals"] = inserted
+        if "prices" in targets:
+            _df, inserted = await svc.ingest_prices(start_time, end_time)
+            summary["prices"] = inserted
+        if "forecasts" in targets:
+            inserted = await svc.ingest_forecasts(
+                start_time, end_time, forecast_types=args.forecast_types
             )
-    finally:
-        db.close()
+            summary["forecasts"] = inserted
+        if "weather" in targets:
+            _df, inserted = await svc.ingest_weather(
+                start_time, end_time, station_id=args.station_id
+            )
+            summary["weather"] = inserted
 
     logger.info(f"Backfill complete: {summary}")
 

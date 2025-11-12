@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from ilmanhinta.db.postgres_client import PostgresClient
 from ilmanhinta.logging import get_logger
 
-router = APIRouter(prefix="/api/v1", tags=["price_predictions"])
+router = APIRouter(prefix="/prices", tags=["predictions"])
 logger = get_logger(__name__)
 
 
@@ -105,7 +105,7 @@ class HourlyPerformance(BaseModel):
 # =====================================================
 
 
-@router.get("/predictions/latest", response_model=list[PricePrediction])
+@router.get("/latest_predictions", response_model=list[PricePrediction])
 async def get_latest_predictions(
     hours_ahead: int = Query(48, ge=1, le=168, description="Number of hours to return"),
     model_type: str = Query("production", description="Model type to fetch"),
@@ -116,7 +116,7 @@ async def get_latest_predictions(
 
     **Example:**
     ```
-    GET /api/v1/predictions/latest?hours_ahead=24&model_type=production
+    GET /prices/latest_predictions?hours_ahead=24&model_type=production
     ```
     """
     db = PostgresClient()
@@ -195,14 +195,14 @@ async def get_comparison(
 
     **Example:**
     ```
-    GET /api/v1/comparison?hours_back=168&only_with_actuals=true
+    GET /prices/comparison?hours_back=168&only_with_actuals=true
     ```
     """
     db = PostgresClient()
 
     try:
         start_time = datetime.now(UTC) - timedelta(hours=hours_back)
-        comparison_df = db.get_prediction_comparison(
+        comparison_df = db.get_price_prediction_comparison(
             start_time=start_time, end_time=datetime.now(UTC), limit=limit
         )
 
@@ -213,7 +213,7 @@ async def get_comparison(
                 detail="No comparison data available. Make sure you have: "
                 "1) Generated ML predictions, "
                 "2) Stored Fingrid forecasts, "
-                "3) Refreshed materialized views (db.refresh_materialized_views())",
+                "3) Refreshed price analytics views (db.refresh_price_analytics_views())",
             )
 
         # Filter if requested
@@ -264,13 +264,13 @@ async def get_performance_summary(
 
     **Example:**
     ```
-    GET /api/v1/performance/summary?hours_back=168
+    GET /prices/performance/summary?hours_back=168
     ```
     """
     db = PostgresClient()
 
     try:
-        summary_dict = db.get_performance_summary(hours_back=hours_back)
+        summary_dict = db.get_price_performance_summary(hours_back=hours_back)
 
         if not summary_dict:
             raise HTTPException(
@@ -294,7 +294,7 @@ async def get_performance_summary(
 
         # Get additional stats
         start_time = datetime.now(UTC) - timedelta(hours=hours_back)
-        comparison_df = db.get_prediction_comparison(
+        comparison_df = db.get_price_prediction_comparison(
             start_time=start_time,
             limit=10000,  # Get all
         )
@@ -328,14 +328,14 @@ async def get_hourly_performance(
 
     **Example:**
     ```
-    GET /api/v1/performance/hourly?hours_back=168
+    GET /prices/performance/hourly?hours_back=168
     ```
     """
     db = PostgresClient()
 
     try:
         start_time = datetime.now(UTC) - timedelta(hours=hours_back)
-        hourly_df = db.get_hourly_performance(start_time=start_time)
+        hourly_df = db.get_price_hourly_performance(start_time=start_time)
 
         if hourly_df.is_empty():
             raise HTTPException(status_code=404, detail="No hourly performance data available")
@@ -376,7 +376,7 @@ async def get_win_conditions(
 
     **Example:**
     ```
-    GET /api/v1/insights/win-conditions?group_by=hour&min_cases=20
+    GET /prices/insights/win-conditions?group_by=hour&min_cases=20
     ```
 
     **Returns conditions like:**
@@ -435,7 +435,7 @@ async def get_win_conditions(
                     NULLIF(COUNT(*), 0) * 100 as win_rate,
                 AVG(ml_absolute_error) as avg_ml_error,
                 AVG(fingrid_absolute_error) as avg_fingrid_error
-            FROM prediction_comparison
+            FROM price_prediction_comparison
             WHERE actual_price IS NOT NULL
               AND fingrid_price_forecast IS NOT NULL
               AND time >= NOW() - INTERVAL '{hours_back} hours'
@@ -470,40 +470,6 @@ async def get_win_conditions(
 
         logger.info(f"Served {len(conditions)} win conditions grouped by {group_by}")
         return conditions
-
-    finally:
-        db.close()
-
-
-@router.post("/admin/refresh-views")
-async def refresh_comparison_views() -> dict[str, str]:
-    """Refresh materialized views (admin endpoint).
-
-    Call this after:
-    - Generating new predictions
-    - Actual prices have been updated
-    - You want latest comparison data
-
-    **Example:**
-    ```
-    POST /api/v1/admin/refresh-views
-    ```
-    """
-    db = PostgresClient()
-
-    try:
-        db.refresh_materialized_views()
-        logger.info("Materialized views refreshed successfully")
-
-        return {
-            "status": "success",
-            "message": "Comparison views refreshed",
-            "timestamp": datetime.now(UTC).isoformat(),
-        }
-
-    except Exception as e:
-        logger.error(f"Error refreshing views: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to refresh views: {str(e)}") from e
 
     finally:
         db.close()

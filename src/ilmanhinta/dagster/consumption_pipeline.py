@@ -9,7 +9,6 @@ from typing import Any
 from dagster import (
     AssetExecutionContext,
     DefaultSensorStatus,
-    Definitions,
     RunRequest,
     ScheduleDefinition,
     SensorEvaluationContext,
@@ -18,8 +17,6 @@ from dagster import (
     sensor,
 )
 
-from ilmanhinta.clients.fingrid import FingridClient
-from ilmanhinta.clients.fmi import FMIClient
 from ilmanhinta.db.postgres_client import PostgresClient
 from ilmanhinta.db.prediction_store import get_prediction_status, store_predictions
 from ilmanhinta.logging import get_logger
@@ -27,6 +24,7 @@ from ilmanhinta.ml.model import ConsumptionModel
 from ilmanhinta.ml.predict import Predictor
 from ilmanhinta.processing.features import FeatureEngineer
 from ilmanhinta.processing.joins import TemporalJoiner
+from ilmanhinta.scripts.backfill_data import BackfillService
 
 # Data directory
 DATA_DIR = Path("data")
@@ -34,8 +32,8 @@ DATA_DIR.mkdir(exist_ok=True)
 logger = get_logger(__name__)
 
 
-@asset
-async def fingrid_consumption_data(context: AssetExecutionContext) -> Path:
+@asset(group_name="consumption_ingest")
+async def consumption_collect_power_actuals(context: AssetExecutionContext) -> Path:
     """Fetch all electricity data from Fingrid (consumption, production, wind, nuclear).
 
     This replaces the old single-dataset approach with a comprehensive fetch
@@ -43,22 +41,21 @@ async def fingrid_consumption_data(context: AssetExecutionContext) -> Path:
     """
     logger.info("Fetching all Fingrid electricity data (consumption, production, wind, nuclear)")
 
-    async with FingridClient() as client:
-        # Fetch last 30 days for training - ALL datasets in parallel
-        all_data = await client.fetch_all_electricity_data(hours=24 * 30)
+    from datetime import timedelta
 
-    # Merge all datasets into a single DataFrame with all features
-    df = TemporalJoiner.merge_fingrid_datasets(all_data)
+    # Use BackfillService to fetch + insert actuals for the last 30 days
+    end_time = datetime.now(UTC)
+    start_time = end_time - timedelta(hours=24 * 30)
+    async with BackfillService() as svc:
+        df, inserted_rows = await svc.ingest_actuals(start_time, end_time)
 
     # Save to parquet (for backup/historical)
     output_path = DATA_DIR / "raw" / f"fingrid_electricity_{datetime.now(UTC).date()}.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(output_path)
 
-    # Write to PostgreSQL + TimescaleDB
-    db = PostgresClient()
-    rows_inserted = db.insert_consumption(df)
-    db.close()
+    # Rows were already upserted by BackfillService
+    rows_inserted = inserted_rows
 
     context.log.info(
         f"Saved {len(df)} electricity records to {output_path} and {rows_inserted} to PostgreSQL"
@@ -69,33 +66,49 @@ async def fingrid_consumption_data(context: AssetExecutionContext) -> Path:
     return output_path
 
 
-@asset
-def fmi_weather_data(context: AssetExecutionContext) -> Path:
+@asset(group_name="consumption_backfill")
+async def consumption_short_interval_backfill(context: AssetExecutionContext) -> dict[str, int]:
+    """On-demand short-interval scrape of Fingrid/FMI into PostgreSQL.
+
+    Uses BackfillService to fetch a small, recent window and persist it. Designed
+    for manual triggering or high-frequency runs without heavy history.
+    """
+    from datetime import timedelta
+
+    hours = 6  # short window; adjust as needed
+    end_time = datetime.now(UTC)
+    start_time = end_time - timedelta(hours=hours)
+
+    summary: dict[str, int] = {}
+    async with BackfillService() as svc:
+        _df, inserted = await svc.ingest_actuals(start_time, end_time)
+        summary["actuals"] = inserted
+        _df, inserted = await svc.ingest_weather(start_time, end_time)
+        summary["weather"] = inserted
+
+    context.log.info(f"Short-interval backfill complete: {summary}")
+    return summary
+
+
+@asset(group_name="consumption_ingest")
+async def consumption_collect_weather_observations(context: AssetExecutionContext) -> Path:
     """Fetch weather observations from FMI."""
     logger.info("Fetching FMI weather data")
 
-    client = FMIClient()
+    # Fetch + insert last 30 days via BackfillService
+    from datetime import timedelta
 
-    # Fetch last 30 days
-    data = client.fetch_realtime_observations(hours=24 * 30)
-
-    # Convert to Polars DataFrame
-    df = TemporalJoiner.fmi_to_polars(data.observations)
-
-    # Add station_id column (required by database schema)
-    import polars as pl
-
-    df = df.with_columns(pl.lit(client.station_id).alias("station_id"))
+    end_time = datetime.now(UTC)
+    start_time = end_time - timedelta(hours=24 * 30)
+    async with BackfillService() as svc:
+        df, rows_inserted = await svc.ingest_weather(start_time, end_time)
 
     # Save to parquet (for backup/historical)
     output_path = DATA_DIR / "raw" / f"fmi_weather_{datetime.now(UTC).date()}.parquet"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(output_path)
 
-    # Write to PostgreSQL + TimescaleDB
-    db = PostgresClient()
-    rows_inserted = db.insert_weather(df, station_id=client.station_id)
-    db.close()
+    # Rows were already upserted by BackfillService
 
     context.log.info(
         f"Saved {len(df)} weather records to {output_path} and {rows_inserted} to PostgreSQL"
@@ -103,8 +116,11 @@ def fmi_weather_data(context: AssetExecutionContext) -> Path:
     return output_path
 
 
-@asset(deps=[fingrid_consumption_data, fmi_weather_data])
-def processed_training_data(context: AssetExecutionContext) -> Path:
+@asset(
+    group_name="consumption_processing",
+    deps=[consumption_collect_power_actuals, consumption_collect_weather_observations],
+)
+def consumption_build_training_dataset(context: AssetExecutionContext) -> Path:
     """Join and process data for model training using PostgreSQL + TimescaleDB."""
     logger.info("Processing training data from PostgreSQL")
     from datetime import timedelta
@@ -142,8 +158,8 @@ def processed_training_data(context: AssetExecutionContext) -> Path:
     return output_path
 
 
-@asset(deps=[processed_training_data])
-def trained_lightgbm_model(context: AssetExecutionContext) -> Path:
+@asset(group_name="consumption_training", deps=[consumption_build_training_dataset])
+def consumption_train_lightgbm_model(context: AssetExecutionContext) -> Path:
     """Train LightGBM model on processed data with engineered features."""
     logger.info("Training LightGBM consumption prediction model")
 
@@ -177,8 +193,8 @@ def trained_lightgbm_model(context: AssetExecutionContext) -> Path:
     return output_path
 
 
-@asset(deps=[trained_lightgbm_model])
-def hourly_forecast_predictions(context: AssetExecutionContext) -> int:
+@asset(group_name="consumption_prediction", deps=[consumption_train_lightgbm_model])
+def consumption_generate_hourly_predictions(context: AssetExecutionContext) -> int:
     """Generate the next 24-hour forecast and persist it for the API."""
 
     logger.info("Generating scheduled 24h forecast")
@@ -207,62 +223,69 @@ def hourly_forecast_predictions(context: AssetExecutionContext) -> int:
 
 
 # Define jobs
-ingest_job = define_asset_job(
-    name="ingest_data",
-    selection=[fingrid_consumption_data, fmi_weather_data],
+consumption_ingest_job = define_asset_job(
+    name="consumption_ingest_job",
+    selection=[consumption_collect_power_actuals, consumption_collect_weather_observations],
 )
 
-train_job = define_asset_job(
-    name="train_models",
+consumption_train_job = define_asset_job(
+    name="consumption_train_job",
     selection=[
-        fingrid_consumption_data,
-        fmi_weather_data,
-        processed_training_data,
-        trained_lightgbm_model,
+        consumption_collect_power_actuals,
+        consumption_collect_weather_observations,
+        consumption_build_training_dataset,
+        consumption_train_lightgbm_model,
     ],
 )
 
-forecast_job = define_asset_job(
-    name="forecast_next_24h",
-    selection=[hourly_forecast_predictions],
+consumption_forecast_job = define_asset_job(
+    name="consumption_forecast_job",
+    selection=[consumption_generate_hourly_predictions],
+)
+
+consumption_short_interval_job = define_asset_job(
+    name="consumption_short_interval_job",
+    selection=[consumption_short_interval_backfill],
 )
 
 # Bootstrap job - runs full pipeline from scratch
-bootstrap_job = define_asset_job(
-    name="bootstrap_system",
+consumption_bootstrap_job = define_asset_job(
+    name="consumption_bootstrap_job",
     selection=[
-        fingrid_consumption_data,
-        fmi_weather_data,
-        processed_training_data,
-        trained_lightgbm_model,
-        hourly_forecast_predictions,
+        consumption_collect_power_actuals,
+        consumption_collect_weather_observations,
+        consumption_build_training_dataset,
+        consumption_train_lightgbm_model,
+        consumption_generate_hourly_predictions,
     ],
 )
 
 # Define schedules
-ingest_schedule = ScheduleDefinition(
-    job=ingest_job,
+consumption_ingest_schedule = ScheduleDefinition(
+    job=consumption_ingest_job,
     cron_schedule="0 * * * *",  # Every hour
 )
 
-train_schedule = ScheduleDefinition(
-    job=train_job,
+consumption_train_schedule = ScheduleDefinition(
+    job=consumption_train_job,
     cron_schedule="0 2 * * *",  # Daily at 2 AM
 )
 
-forecast_schedule = ScheduleDefinition(
-    job=forecast_job,
+consumption_forecast_schedule = ScheduleDefinition(
+    job=consumption_forecast_job,
     cron_schedule="5 * * * *",  # Hourly, shortly after ingestion
 )
 
 
 # Sensor to detect missing predictions and auto-bootstrap
 @sensor(
-    job=bootstrap_job,
+    job=consumption_bootstrap_job,
     minimum_interval_seconds=300,  # Check every 5 minutes
     default_status=DefaultSensorStatus.RUNNING,  # Auto-enabled on startup
 )
-def bootstrap_sensor(context: SensorEvaluationContext) -> Generator[RunRequest, None, None]:
+def consumption_bootstrap_sensor(
+    context: SensorEvaluationContext,
+) -> Generator[RunRequest, None, None]:
     """Automatically bootstrap the system when predictions are missing.
 
     This sensor checks if predictions exist and triggers the bootstrap job
@@ -277,7 +300,7 @@ def bootstrap_sensor(context: SensorEvaluationContext) -> Generator[RunRequest, 
         if not status["available"]:
             context.log.warning("No predictions found - triggering bootstrap job")
             yield RunRequest(
-                run_key=f"bootstrap_{datetime.now(UTC).isoformat()}",
+                run_key=f"consumption_bootstrap_{datetime.now(UTC).isoformat()}",
                 tags={
                     "reason": "missing_predictions",
                     "auto_triggered": "true",
@@ -294,15 +317,8 @@ def bootstrap_sensor(context: SensorEvaluationContext) -> Generator[RunRequest, 
 
 
 # Definitions
-defs = Definitions(
-    assets=[
-        fingrid_consumption_data,
-        fmi_weather_data,
-        processed_training_data,
-        trained_lightgbm_model,
-        hourly_forecast_predictions,
-    ],
-    jobs=[ingest_job, train_job, forecast_job, bootstrap_job],
-    schedules=[ingest_schedule, train_schedule, forecast_schedule],
-    sensors=[bootstrap_sensor],
-)
+"""Note: Unified Definitions are composed in ilmanhinta.dagster.__init__.py.
+
+This module intentionally does not export a module-level `defs` to avoid
+multiple Dagster entry points. Import assets/jobs into the aggregator instead.
+"""

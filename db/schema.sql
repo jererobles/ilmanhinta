@@ -648,7 +648,7 @@ GRANT SELECT ON frequent_queries TO api;
 -- PRICE FORECAST COMPARISON VIEWS
 -- =============================================================================
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS prediction_comparison AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS price_prediction_comparison AS
 WITH latest_model_pred AS (
     SELECT DISTINCT ON (prediction_time)
         prediction_time,
@@ -714,12 +714,13 @@ LEFT JOIN fingrid_price_actuals ep
 WHERE p.prediction_time < NOW()
 ORDER BY p.prediction_time DESC;
 
-CREATE INDEX IF NOT EXISTS idx_comparison_time
-    ON prediction_comparison (time DESC);
-CREATE INDEX IF NOT EXISTS idx_comparison_winner
-    ON prediction_comparison (ml_vs_fingrid_winner);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_price_prediction_cmp_time
+    ON price_prediction_comparison (time DESC);
+CREATE INDEX IF NOT EXISTS idx_price_prediction_cmp_winner
+    ON price_prediction_comparison (ml_vs_fingrid_winner);
+-- CREATE UNIQUE INDEX IF NOT EXISTS idx_pred ON price_prediction_comparison (time, ml_prediction)
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS hourly_prediction_performance AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS price_prediction_performance_hourly AS
 SELECT
     time_bucket('1 hour', time) AS hour,
     COUNT(*) AS num_predictions,
@@ -733,20 +734,47 @@ SELECT
     AVG(actual_price) AS avg_actual_price,
     MIN(actual_price) AS min_actual_price,
     MAX(actual_price) AS max_actual_price
-FROM prediction_comparison
+FROM price_prediction_comparison
 WHERE actual_price IS NOT NULL
 GROUP BY hour
 WITH NO DATA;
 
-CREATE OR REPLACE FUNCTION refresh_prediction_comparison()
+CREATE UNIQUE INDEX IF NOT EXISTS idx_price_prediction_perf_hour
+    ON price_prediction_performance_hourly (hour);
+
+CREATE OR REPLACE FUNCTION refresh_price_prediction_views()
 RETURNS void AS $$
+DECLARE
+    prediction_populated BOOLEAN;
+    hourly_populated BOOLEAN;
 BEGIN
-    REFRESH MATERIALIZED VIEW CONCURRENTLY prediction_comparison;
-    REFRESH MATERIALIZED VIEW CONCURRENTLY hourly_prediction_performance;
+    SELECT ispopulated
+    INTO prediction_populated
+    FROM pg_matviews
+    WHERE schemaname = 'public'
+      AND matviewname = 'price_prediction_comparison';
+
+    IF prediction_populated THEN
+        REFRESH MATERIALIZED VIEW CONCURRENTLY price_prediction_comparison;
+    ELSE
+        REFRESH MATERIALIZED VIEW price_prediction_comparison;
+    END IF;
+
+    SELECT ispopulated
+    INTO hourly_populated
+    FROM pg_matviews
+    WHERE schemaname = 'public'
+      AND matviewname = 'price_prediction_performance_hourly';
+
+    IF hourly_populated THEN
+        REFRESH MATERIALIZED VIEW CONCURRENTLY price_prediction_performance_hourly;
+    ELSE
+        REFRESH MATERIALIZED VIEW price_prediction_performance_hourly;
+    END IF;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION get_latest_performance_summary(
+CREATE OR REPLACE FUNCTION get_price_prediction_summary(
     hours_back INTEGER DEFAULT 24
 )
 RETURNS TABLE (
@@ -759,7 +787,7 @@ BEGIN
     RETURN QUERY
     WITH recent_data AS (
         SELECT *
-        FROM prediction_comparison
+        FROM price_prediction_comparison
         WHERE time >= NOW() - (hours_back || ' hours')::INTERVAL
         AND actual_price IS NOT NULL
         AND fingrid_price_forecast IS NOT NULL
@@ -784,10 +812,10 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-GRANT SELECT ON prediction_comparison TO api;
-GRANT SELECT ON hourly_prediction_performance TO api;
-GRANT EXECUTE ON FUNCTION refresh_prediction_comparison TO api;
-GRANT EXECUTE ON FUNCTION get_latest_performance_summary TO api;
+GRANT SELECT ON price_prediction_comparison TO api;
+GRANT SELECT ON price_prediction_performance_hourly TO api;
+GRANT EXECUTE ON FUNCTION refresh_price_prediction_views TO api;
+GRANT EXECUTE ON FUNCTION get_price_prediction_summary TO api;
 
 -- =============================================================================
 -- RETENTION POLICIES

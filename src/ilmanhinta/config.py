@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     api_host: str = Field(default="0.0.0.0", description="API host")
     api_port: int = Field(default=8000, description="API port")
 
+    # API
+    postgres_user: str | None = Field(default=None, description="Postgres username")
+    postgres_password: str | None = Field(default=None, description="Postgres password")
+    postgres_db: str = Field(default="ilmanhinta", description="Postgres database")
+    postgres_host: str = Field(default="localhost", description="Postgres host")
+    postgres_port: int = Field(default=5432, description="Postgres port")
+
     # Dagster
     dagster_home: str = Field(default="/app/dagster_home", description="Dagster home directory")
 

@@ -48,7 +48,7 @@ class FingridDatasets:
     PRICE_DOWN_REGULATION = 106  # Down-regulation price in balancing market (EUR/MWh)
     PRICE_IMBALANCE_SALE = 93  # Production imbalance electricity sale price (EUR/MWh)
     PRICE_IMBALANCE_BUY = 96  # Production imbalance electricity buy price (EUR/MWh)
-    PRICE_IMBALANCE = 92  # Imbalance power pricing (EUR/MWh)
+    PRICE_IMBALANCE = 319  # Imbalance power pricing (EUR/MWh)
 
     # === Forecasts (Features for Prediction) ===
     FORECAST_CONSUMPTION_DAILY = 165  # Consumption forecast - 24h ahead (MW)

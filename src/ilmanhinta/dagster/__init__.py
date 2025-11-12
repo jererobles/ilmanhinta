@@ -7,102 +7,62 @@ Unified definitions combining:
 
 from dagster import Definitions
 
-# =====================================================
-# Import Consumption Prediction Components
-# =====================================================
-from ilmanhinta.dagster.jobs import (
-    bootstrap_job,
-    # Sensors
-    bootstrap_sensor,
-    # Assets
-    fingrid_consumption_data,
-    fmi_weather_data,
-    forecast_job,
-    forecast_schedule,
-    hourly_forecast_predictions,
-    # Jobs
-    ingest_job,
-    # Schedules
-    ingest_schedule,
-    processed_training_data,
-    train_job,
-    train_schedule,
-    trained_lightgbm_model,
-)
+from ilmanhinta.dagster import consumption_pipeline as consumption
+from ilmanhinta.dagster import price_pipeline as price
 
-# =====================================================
-# Import Price Prediction Components
-# =====================================================
-from ilmanhinta.dagster.price_prediction_jobs import (
-    # Assets
-    collect_actual_prices,
-    collect_fingrid_power_forecasts,
-    collect_fmi_weather_forecasts,
-    daily_analysis_job,
-    generate_performance_report,
-    generate_price_predictions,
-    # Jobs
-    hourly_prediction_job,
-    refresh_comparison_views,
-    retrain_price_model,
-    weekly_retraining_job,
-)
-from ilmanhinta.dagster.price_prediction_jobs import (
-    daily_schedule as price_daily_schedule,
-)
-from ilmanhinta.dagster.price_prediction_jobs import (
-    # Schedules
-    hourly_schedule as price_hourly_schedule,
-)
-from ilmanhinta.dagster.price_prediction_jobs import (
-    weekly_schedule as price_weekly_schedule,
-)
+# Consumption pipeline components
+CONSUMPTION_ASSETS = [
+    consumption.consumption_collect_power_actuals,
+    consumption.consumption_collect_weather_observations,
+    consumption.consumption_build_training_dataset,
+    consumption.consumption_train_lightgbm_model,
+    consumption.consumption_generate_hourly_predictions,
+    consumption.consumption_short_interval_backfill,
+]
+CONSUMPTION_JOBS = [
+    consumption.consumption_ingest_job,
+    consumption.consumption_train_job,
+    consumption.consumption_forecast_job,
+    consumption.consumption_bootstrap_job,
+    consumption.consumption_short_interval_job,
+]
+CONSUMPTION_SCHEDULES = [
+    consumption.consumption_ingest_schedule,
+    consumption.consumption_train_schedule,
+    consumption.consumption_forecast_schedule,
+]
+CONSUMPTION_SENSORS = [consumption.consumption_bootstrap_sensor]
 
-# =====================================================
-# Unified Definitions
-# =====================================================
+# Price pipeline components
+PRICE_ASSETS = [
+    price.price_backfill_recent_history,
+    price.price_collect_actual_prices,
+    price.price_collect_power_forecasts,
+    price.price_collect_weather_forecasts,
+    price.price_generate_historical_predictions,
+    price.price_generate_predictions,
+    price.price_refresh_prediction_views,
+    price.price_retrain_model,
+    price.price_generate_performance_report,
+]
+PRICE_JOBS = [
+    price.price_hourly_prediction_job,
+    price.price_daily_analysis_job,
+    price.price_weekly_retraining_job,
+    price.price_bootstrap_job,
+]
+PRICE_SCHEDULES = [
+    price.price_hourly_schedule,
+    price.price_daily_schedule,
+    price.price_weekly_schedule,
+]
+PRICE_SENSORS = [price.price_bootstrap_sensor]
 
 defs = Definitions(
-    assets=[
-        # === Consumption Prediction Assets ===
-        fingrid_consumption_data,
-        fmi_weather_data,
-        processed_training_data,
-        trained_lightgbm_model,
-        hourly_forecast_predictions,
-        # === Price Prediction Assets ===
-        collect_actual_prices,
-        collect_fingrid_power_forecasts,
-        collect_fmi_weather_forecasts,
-        generate_price_predictions,
-        refresh_comparison_views,
-        retrain_price_model,
-        generate_performance_report,
-    ],
-    jobs=[
-        # === Consumption Prediction Jobs ===
-        ingest_job,
-        train_job,
-        forecast_job,
-        bootstrap_job,
-        # === Price Prediction Jobs ===
-        hourly_prediction_job,
-        daily_analysis_job,
-        weekly_retraining_job,
-    ],
-    schedules=[
-        # === Consumption Prediction Schedules ===
-        ingest_schedule,  # Hourly: Fetch consumption + weather data
-        train_schedule,  # Daily 2 AM: Retrain consumption models
-        forecast_schedule,  # Hourly: Generate consumption predictions
-        # === Price Prediction Schedules ===
-        price_hourly_schedule,  # Hourly: Collect forecasts + generate price predictions
-        price_daily_schedule,  # Daily 1 AM: Refresh comparison views + performance reports
-        price_weekly_schedule,  # Weekly Sun 2 AM: Retrain price model
-    ],
-    sensors=[
-        bootstrap_sensor,  # Auto-bootstrap consumption predictions when missing
-    ],
+    assets=[*CONSUMPTION_ASSETS, *PRICE_ASSETS],
+    jobs=[*CONSUMPTION_JOBS, *PRICE_JOBS],
+    schedules=[*CONSUMPTION_SCHEDULES, *PRICE_SCHEDULES],
+    sensors=[*CONSUMPTION_SENSORS, *PRICE_SENSORS],
 )
 
 __all__ = ["defs"]

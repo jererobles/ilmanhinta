@@ -7,11 +7,11 @@ time-series queries.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
+from ilmanhinta.db.postgres_client import get_database_url
 from ilmanhinta.models.fmi import PredictionOutput
 
 try:
@@ -35,21 +35,10 @@ CREATE TABLE IF NOT EXISTS consumption_model_predictions (
 """
 
 
-def _get_database_url() -> str:
-    """Get PostgreSQL database URL from environment."""
-    url = os.getenv("DATABASE_URL")
-    if not url:
-        raise ValueError(
-            "DATABASE_URL environment variable is required. "
-            "Set it to your PostgreSQL connection string (e.g., postgresql://user:pass@host:5432/dbname)"
-        )
-    return url
-
-
 @contextmanager
 def _pg_conn() -> Generator[Any, None, None]:
     """Yield a Postgres connection."""
-    conn = psycopg.connect(_get_database_url())
+    conn = psycopg.connect(get_database_url())
     try:
         yield conn
     finally:

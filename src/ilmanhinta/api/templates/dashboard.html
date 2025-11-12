@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ilmanhinta - Energy Dashboard</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/css/style.css">
+
+    <style>
+        /* Custom gradients and animations */
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .card-hover:hover {
+            transform: translateY(-4px);
+            transition: all 0.3s ease;
+        }
+        .pulse-animation {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Header -->
+    <header class="gradient-bg text-white shadow-lg">
+        <div class="container mx-auto px-4 py-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-3xl font-bold flex items-center">
+                        <i class="fas fa-bolt mr-3"></i>
+                        Ilmanhinta Energy Dashboard
+                    </h1>
+                    <p class="text-purple-100 mt-1">Finnish Energy Prediction & Price Forecasting</p>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <div id="lastUpdate" class="text-sm text-purple-100">
+                        <i class="fas fa-clock mr-1"></i>
+                        Last update: <span id="updateTime">--:--</span>
+                    </div>
+                    <button onclick="refreshAll()" class="bg-white text-purple-700 px-4 py-2 rounded-lg hover:bg-purple-50 transition">
+                        <i class="fas fa-sync-alt mr-2"></i>Refresh
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <div class="container mx-auto px-4 py-8">
+        <!-- Key Metrics Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+            <!-- Peak Consumption Card -->
+            <div class="bg-white rounded-xl shadow-md p-6 card-hover">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="text-blue-600 bg-blue-100 p-3 rounded-lg">
+                        <i class="fas fa-chart-line text-2xl"></i>
+                    </div>
+                    <span class="text-green-500 text-sm font-semibold pulse-animation">LIVE</span>
+                </div>
+                <h3 class="text-gray-600 text-sm font-medium mb-1">Peak Consumption (24h)</h3>
+                <p class="text-2xl font-bold text-gray-800">
+                    <span id="peakConsumption">--</span> MW
+                </p>
+                <p class="text-xs text-gray-500 mt-2">
+                    At <span id="peakTime">--:--</span>
+                </p>
+            </div>
+
+            <!-- Current Price Card -->
+            <div class="bg-white rounded-xl shadow-md p-6 card-hover">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="text-green-600 bg-green-100 p-3 rounded-lg">
+                        <i class="fas fa-euro-sign text-2xl"></i>
+                    </div>
+                    <span id="priceChange" class="text-sm font-semibold">--</span>
+                </div>
+                <h3 class="text-gray-600 text-sm font-medium mb-1">Current Price</h3>
+                <p class="text-2xl font-bold text-gray-800">
+                    <span id="currentPrice">--</span> €/MWh
+                </p>
+                <p class="text-xs text-gray-500 mt-2">
+                    ML Prediction: <span id="mlPrediction">--</span> €/MWh
+                </p>
+            </div>
+
+            <!-- Model Accuracy Card -->
+            <div class="bg-white rounded-xl shadow-md p-6 card-hover">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="text-purple-600 bg-purple-100 p-3 rounded-lg">
+                        <i class="fas fa-bullseye text-2xl"></i>
+                    </div>
+                    <span class="text-purple-500 text-sm font-semibold">24h</span>
+                </div>
+                <h3 class="text-gray-600 text-sm font-medium mb-1">Model Accuracy (MAE)</h3>
+                <p class="text-2xl font-bold text-gray-800">
+                    <span id="modelAccuracy">--</span> MW
+                </p>
+                <p class="text-xs text-gray-500 mt-2">
+                    Win Rate: <span id="winRate">--</span>%
+                </p>
+            </div>
+
+            <!-- System Health Card -->
+            <div class="bg-white rounded-xl shadow-md p-6 card-hover">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="text-orange-600 bg-orange-100 p-3 rounded-lg">
+                        <i class="fas fa-heartbeat text-2xl"></i>
+                    </div>
+                    <span id="systemStatus" class="text-green-500 text-sm font-semibold">
+                        <i class="fas fa-circle text-xs mr-1"></i>Healthy
+                    </span>
+                </div>
+                <h3 class="text-gray-600 text-sm font-medium mb-1">System Health</h3>
+                <p class="text-2xl font-bold text-gray-800">
+                    <span id="predictionCount">--</span>
+                </p>
+                <p class="text-xs text-gray-500 mt-2">
+                    Predictions available
+                </p>
+            </div>
+        </div>
+
+        <!-- Charts Section -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <!-- Consumption Forecast Chart -->
+            <div class="bg-white rounded-xl shadow-md p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-bold text-gray-800">
+                        <i class="fas fa-bolt mr-2 text-blue-600"></i>
+                        Consumption Forecast (24h)
+                    </h2>
+                    <select id="consumptionTimeRange" class="text-sm border rounded-lg px-3 py-1">
+                        <option value="24">24 hours</option>
+                        <option value="48">48 hours</option>
+                        <option value="168">7 days</option>
+                    </select>
+                </div>
+                <div class="h-80">
+                    <canvas id="consumptionChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Price Prediction Chart -->
+            <div class="bg-white rounded-xl shadow-md p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-bold text-gray-800">
+                        <i class="fas fa-chart-area mr-2 text-green-600"></i>
+                        Price Predictions
+                    </h2>
+                    <select id="priceTimeRange" class="text-sm border rounded-lg px-3 py-1">
+                        <option value="24">24 hours</option>
+                        <option value="48">48 hours</option>
+                        <option value="168">7 days</option>
+                    </select>
+                </div>
+                <div class="h-80">
+                    <canvas id="priceChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Model Comparison Chart -->
+        <div class="bg-white rounded-xl shadow-md p-6 mb-8">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-bold text-gray-800">
+                    <i class="fas fa-balance-scale mr-2 text-purple-600"></i>
+                    ML vs Fingrid Comparison
+                </h2>
+                <div class="flex space-x-2">
+                    <button onclick="toggleComparisonMetric('error')" class="comparison-btn active px-3 py-1 text-sm rounded-lg">
+                        Error Rates
+                    </button>
+                    <button onclick="toggleComparisonMetric('accuracy')" class="comparison-btn px-3 py-1 text-sm rounded-lg">
+                        Accuracy
+                    </button>
+                </div>
+            </div>
+            <div class="h-80">
+                <canvas id="comparisonChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Dagster Jobs Control Panel -->
+        <div class="bg-white rounded-xl shadow-md p-6 mb-8">
+            <h2 class="text-xl font-bold text-gray-800 mb-6">
+                <i class="fas fa-cogs mr-2 text-orange-600"></i>
+                Dagster Job Control
+            </h2>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <!-- Consumption Pipeline -->
+                <div class="border rounded-lg p-4">
+                    <h3 class="font-semibold text-gray-700 mb-3">
+                        <i class="fas fa-bolt mr-2 text-blue-500"></i>
+                        Consumption Pipeline
+                    </h3>
+                    <div class="space-y-2">
+                        <button onclick="triggerJob('consumption_ingest_job')" class="job-btn w-full bg-blue-50 hover:bg-blue-100 text-blue-700 px-4 py-2 rounded-lg text-left transition">
+                            <i class="fas fa-download mr-2"></i>
+                            <span class="font-medium">Ingest Data</span>
+                            <span class="text-xs text-gray-600 ml-2">(Fetch latest data)</span>
+                        </button>
+                        <button onclick="triggerJob('consumption_train_job')" class="job-btn w-full bg-purple-50 hover:bg-purple-100 text-purple-700 px-4 py-2 rounded-lg text-left transition">
+                            <i class="fas fa-brain mr-2"></i>
+                            <span class="font-medium">Train Models</span>
+                            <span class="text-xs text-gray-600 ml-2">(Retrain LightGBM)</span>
+                        </button>
+                        <button onclick="triggerJob('consumption_forecast_job')" class="job-btn w-full bg-green-50 hover:bg-green-100 text-green-700 px-4 py-2 rounded-lg text-left transition">
+                            <i class="fas fa-chart-line mr-2"></i>
+                            <span class="font-medium">Generate Forecast</span>
+                            <span class="text-xs text-gray-600 ml-2">(24h prediction)</span>
+                        </button>
+                        <button onclick="triggerJob('consumption_bootstrap_job')" class="job-btn w-full bg-red-50 hover:bg-red-100 text-red-700 px-4 py-2 rounded-lg text-left transition">
+                            <i class="fas fa-rocket mr-2"></i>
+                            <span class="font-medium">Bootstrap System</span>
+                            <span class="text-xs text-gray-600 ml-2">(Full initialization)</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Price Pipeline -->
+                <div class="border rounded-lg p-4">
+                    <h3 class="font-semibold text-gray-700 mb-3">
+                        <i class="fas fa-euro-sign mr-2 text-green-500"></i>
+                        Price Pipeline
+                    </h3>
+                    <div class="space-y-2">
+                        <button onclick="triggerJob('price_bootstrap_job')" class="job-btn w-full bg-red-50 hover:bg-red-100 text-red-700 px-4 py-2 rounded-lg text-left transition">
+                            <i class="fas fa-rocket mr-2"></i>
+                            <span class="font-medium">Bootstrap Price Pipeline</span>
+                            <span class="text-xs text-gray-600 ml-2">(Collect + predict + refresh)</span>
+                        </button>
+                        <button onclick="triggerJob('price_hourly_prediction_job')" class="job-btn w-full bg-blue-50 hover:bg-blue-100 text-blue-700 px-4 py-2 rounded-lg text-left transition">
+                            <i class="fas fa-clock mr-2"></i>
+                            <span class="font-medium">Hourly Prediction</span>
+                            <span class="text-xs text-gray-600 ml-2">(Update prices)</span>
+                        </button>
+                        <button onclick="triggerJob('price_daily_analysis_job')" class="job-btn w-full bg-orange-50 hover:bg-orange-100 text-orange-700 px-4 py-2 rounded-lg text-left transition">
+                            <i class="fas fa-chart-bar mr-2"></i>
+                            <span class="font-medium">Daily Analysis</span>
+                            <span class="text-xs text-gray-600 ml-2">(Performance report)</span>
+                        </button>
+                        <button onclick="triggerJob('price_weekly_retraining_job')" class="job-btn w-full bg-purple-50 hover:bg-purple-100 text-purple-700 px-4 py-2 rounded-lg text-left transition">
+                            <i class="fas fa-graduation-cap mr-2"></i>
+                            <span class="font-medium">Weekly Retrain</span>
+                            <span class="text-xs text-gray-600 ml-2">(XGBoost model)</span>
+                        </button>
+                        <button onclick="triggerJob('refresh_views')" class="job-btn w-full bg-teal-50 hover:bg-teal-100 text-teal-700 px-4 py-2 rounded-lg text-left transition">
+                            <i class="fas fa-sync mr-2"></i>
+                            <span class="font-medium">Refresh Views</span>
+                            <span class="text-xs text-gray-600 ml-2">(Update comparisons)</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Job Status Display -->
+            <div id="jobStatus" class="mt-4 hidden">
+                <div class="bg-blue-50 border-l-4 border-blue-400 p-4 rounded">
+                    <div class="flex items-center">
+                        <div class="flex-shrink-0">
+                            <i class="fas fa-info-circle text-blue-400"></i>
+                        </div>
+                        <div class="ml-3">
+                            <p class="text-sm text-blue-700" id="jobStatusMessage">
+                                Job triggered successfully...
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance Metrics Table -->
+        <div class="bg-white rounded-xl shadow-md p-6">
+            <h2 class="text-xl font-bold text-gray-800 mb-4">
+                <i class="fas fa-table mr-2 text-indigo-600"></i>
+                Model Performance Metrics
+            </h2>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="border-b">
+                            <th class="text-left py-2 px-4 font-semibold text-gray-700">Metric</th>
+                            <th class="text-center py-2 px-4 font-semibold text-gray-700">ML Model</th>
+                            <th class="text-center py-2 px-4 font-semibold text-gray-700">Fingrid</th>
+                            <th class="text-center py-2 px-4 font-semibold text-gray-700">Improvement</th>
+                        </tr>
+                    </thead>
+                    <tbody id="performanceTable">
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="py-2 px-4">Loading...</td>
+                            <td class="text-center py-2 px-4">--</td>
+                            <td class="text-center py-2 px-4">--</td>
+                            <td class="text-center py-2 px-4">--</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="fixed bottom-4 right-4 hidden transform transition-transform duration-300">
+        <div class="bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg flex items-center">
+            <i class="fas fa-check-circle mr-2"></i>
+            <span id="toastMessage">Success!</span>
+        </div>
+    </div>
+
+    <!-- Custom JavaScript -->
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

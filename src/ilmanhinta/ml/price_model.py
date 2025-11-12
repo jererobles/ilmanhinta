@@ -33,6 +33,30 @@ from ilmanhinta.processing.dataset_builder import get_feature_names, split_train
 
 logger = get_logger(__name__)
 
+# Map training-only column names to the names used during prediction.
+TRAIN_TO_PREDICT_COLUMN_MAP: dict[str, str] = {
+    # Electricity system metrics
+    "consumption_mw": "consumption_forecast_mw",
+    "production_mw": "production_forecast_mw",
+    "wind_mw": "wind_forecast_mw",
+    # Weather observations vs. forecast column names
+    "temperature_c": "temperature",
+    "wind_speed_ms": "wind_speed",
+    "humidity_percent": "humidity",
+    "pressure_hpa": "pressure",
+}
+
+# Columns/derived features that we cannot reproduce at prediction time with the current
+# data sources (e.g. no nuclear or net import forecasts yet). Keep them out of training.
+TRAIN_ONLY_FEATURES: list[str] = [
+    "nuclear_mw",
+    "net_import_mw",
+    "nuclear_share",
+    "import_dependency",
+    "is_importing",
+    "is_exporting",
+]
+
 
 class PricePredictionModel:
     """Electricity price prediction model."""
@@ -75,11 +99,17 @@ class PricePredictionModel:
         """
         logger.info(f"Training {self.model_type} model on {len(train_df)} samples")
 
+        # Align column names so they match what PredictionDatasetBuilder produces.
+        train_df = self._align_training_columns(train_df)
+
         # Split into train/validation (temporal)
         train_data, val_data = split_train_test_temporal(train_df, test_size=validation_split)
 
         # Get features and target
-        self.feature_names = get_feature_names(train_df, exclude=[target_col])
+        excluded_cols = (
+            list(TRAIN_TO_PREDICT_COLUMN_MAP.keys()) + TRAIN_ONLY_FEATURES + [target_col]
+        )
+        self.feature_names = get_feature_names(train_df, exclude=excluded_cols)
 
         X_train = train_data.select(self.feature_names).to_numpy()
         y_train = train_data.select(target_col).to_numpy().ravel()
@@ -144,6 +174,15 @@ class PricePredictionModel:
             raise RuntimeError("Model not trained yet. Call train() first.")
 
         logger.info(f"Predicting prices for {len(df)} periods")
+
+        missing_features = [col for col in self.feature_names if col not in df.columns]
+        if missing_features:
+            missing_list = ", ".join(sorted(missing_features))
+            raise ValueError(
+                "Prediction dataset is missing required features: "
+                f"{missing_list}. Ensure PredictionDatasetBuilder generates the "
+                "same feature set that was used during training."
+            )
 
         # Extract features
         X = df.select(self.feature_names).to_numpy()
@@ -331,5 +370,25 @@ class PricePredictionModel:
                 "importance": list(self.feature_importance.values()),
             }
         ).sort("importance", descending=True)
+
+        return df
+
+    def _align_training_columns(self, df: pl.DataFrame) -> pl.DataFrame:
+        """Duplicate training columns so names match prediction-time features."""
+        additional_columns = []
+        aligned_names: list[str] = []
+
+        for actual_name, prediction_name in TRAIN_TO_PREDICT_COLUMN_MAP.items():
+            if actual_name in df.columns and prediction_name not in df.columns:
+                additional_columns.append(pl.col(actual_name).alias(prediction_name))
+                aligned_names.append(f"{actual_name}->{prediction_name}")
+
+        if additional_columns:
+            df = df.with_columns(additional_columns)
+            logger.debug(
+                "Aligned %d training columns to prediction naming: %s",
+                len(additional_columns),
+                aligned_names,
+            )
 
         return df

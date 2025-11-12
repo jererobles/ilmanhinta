@@ -14,15 +14,22 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import polars as pl
+from polars.datatypes import DataTypeClass
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.sql.expression import TextClause
 
+from ilmanhinta.config import settings
+
 
 def get_database_url() -> str:
     """Get PostgreSQL database URL from environment."""
-    return os.getenv("DATABASE_URL", "postgresql://api:hunter2@localhost:5432/ilmanhinta")
+    env_database_url = os.getenv("DATABASE_URL", None)
+    if env_database_url is not None:
+        return env_database_url
+
+    return f"postgresql://{settings.postgres_user}:{settings.postgres_password}@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}"
 
 
 class PostgresClient:
@@ -95,13 +102,21 @@ class PostgresClient:
         self,
         query: str | TextClause,
         params: Mapping[str, object] | None = None,
+        *,
+        schema_overrides: Mapping[str, DataTypeClass] | None = None,
+        infer_schema_length: int | None = None,
     ) -> pl.DataFrame:
         """Execute a query and return the result as a Polars DataFrame."""
         stmt = query if isinstance(query, TextClause) else text(query)
         if params:
             stmt = stmt.bindparams(**params)
         with self.engine.connect() as connection:
-            return pl.read_database(stmt, connection=connection)
+            return pl.read_database(
+                stmt,
+                connection=connection,
+                schema_overrides=dict(schema_overrides or {}),
+                infer_schema_length=infer_schema_length,
+            )
 
     def insert_consumption(self, df: pl.DataFrame) -> int:
         """Insert electricity consumption data from Polars DataFrame.
@@ -524,7 +539,7 @@ class PostgresClient:
 
         query = text(
             """
-            SELECT time, consumption_mw, production_mw, net_import_mw
+            SELECT time, consumption_mw, production_mw, wind_mw, nuclear_mw, net_import_mw
             FROM fingrid_power_actuals
             WHERE time >= :start_time AND time <= :end_time
             ORDER BY time
@@ -691,8 +706,7 @@ class PostgresClient:
                 w.cloud_cover,
                 w.humidity_percent AS humidity,
                 w.pressure_hpa AS pressure,
-                w.precipitation_mm,
-                p.price_eur_mwh
+                w.precipitation_mm
             FROM fingrid_power_actuals c
             LEFT JOIN LATERAL (
                 SELECT * FROM fmi_weather_observations w2
@@ -700,26 +714,41 @@ class PostgresClient:
                 ORDER BY w2.time DESC
                 LIMIT 1
             ) w ON true
-            LEFT JOIN LATERAL (
-                SELECT * FROM fingrid_price_actuals p2
-                WHERE p2.time = c.time
-                  AND p2.area = 'FI'
-                LIMIT 1
-            ) p ON true
             WHERE c.time >= :start_time AND c.time <= :end_time
             ORDER BY c.time
         """
         )
 
-        return self._read_frame(query, {"start_time": start_time, "end_time": end_time})
+        float_columns = [
+            "consumption_mw",
+            "production_mw",
+            "wind_mw",
+            "nuclear_mw",
+            "net_import_mw",
+            "temperature",
+            "wind_speed",
+            "wind_direction",
+            "cloud_cover",
+            "humidity",
+            "pressure",
+            "precipitation_mm",
+        ]
+        schema_overrides = dict.fromkeys(float_columns, pl.Float64)
 
-    def get_prediction_comparison(
+        return self._read_frame(
+            query,
+            {"start_time": start_time, "end_time": end_time},
+            schema_overrides=schema_overrides,
+            infer_schema_length=None,
+        )
+
+    def get_price_prediction_comparison(
         self,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
         limit: int = 100,
     ) -> pl.DataFrame:
-        """Get prediction comparison data (ML vs Fingrid vs Actual).
+        """Get price-prediction comparison data (ML vs Fingrid vs actuals).
 
         Args:
             start_time: Start timestamp (defaults to 7 days ago)
@@ -752,7 +781,7 @@ class PostgresClient:
                 END as winner,
                 model_type,
                 model_version
-            FROM prediction_comparison
+            FROM price_prediction_comparison
             WHERE time >= :start_time AND time <= :end_time
             ORDER BY time DESC
             LIMIT :limit
@@ -763,8 +792,8 @@ class PostgresClient:
             query, {"start_time": start_time, "end_time": end_time, "limit": limit}
         )
 
-    def get_performance_summary(self, hours_back: int = 24) -> dict[str, Any]:
-        """Get performance summary comparing ML model vs Fingrid forecasts.
+    def get_price_performance_summary(self, hours_back: int = 24) -> dict[str, Any]:
+        """Get price-performance summary comparing ML model vs Fingrid forecasts.
 
         Args:
             hours_back: Number of hours to look back
@@ -772,7 +801,7 @@ class PostgresClient:
         Returns:
             Dict with performance metrics
         """
-        query = text("SELECT * FROM get_latest_performance_summary(:hours_back)")
+        query = text("SELECT * FROM get_price_prediction_summary(:hours_back)")
 
         with self.session() as session:
             result = session.execute(query, {"hours_back": hours_back})
@@ -794,12 +823,12 @@ class PostgresClient:
 
             return summary
 
-    def get_hourly_performance(
+    def get_price_hourly_performance(
         self,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
     ) -> pl.DataFrame:
-        """Get hourly aggregated performance metrics.
+        """Get hourly aggregated price-performance metrics.
 
         Args:
             start_time: Start timestamp (defaults to 7 days ago)
@@ -825,21 +854,29 @@ class PostgresClient:
                 avg_actual_price,
                 min_actual_price,
                 max_actual_price
-            FROM hourly_prediction_performance
+            FROM price_prediction_performance_hourly
             WHERE hour >= :start_time AND hour <= :end_time
             ORDER BY hour DESC
         """
         )
 
-        return self._read_frame(query, {"start_time": start_time, "end_time": end_time})
+        try:
+            return self._read_frame(query, {"start_time": start_time, "end_time": end_time})
+        except Exception as exc:  # Fall back if view was never populated
+            message = str(exc)
+            if (
+                "price_prediction_performance_hourly" in message
+                and "has not been populated" in message
+            ):
+                self.refresh_price_analytics_views()
+                return self._read_frame(query, {"start_time": start_time, "end_time": end_time})
+            raise
 
-    def refresh_materialized_views(self) -> None:
-        """Refresh all materialized views for better query performance."""
+    def refresh_price_analytics_views(self) -> None:
+        """Refresh price analytics materialized views."""
         with self.session() as session:
-            # Keep prediction comparison views in sync before downstream aggregates
-            session.execute(text("SELECT refresh_prediction_comparison()"))
+            session.execute(text("SELECT refresh_price_prediction_views()"))
 
-            # Refresh prediction accuracy views (non-continuous due to multi-hypertable joins)
             session.execute(
                 text("REFRESH MATERIALIZED VIEW CONCURRENTLY prediction_accuracy_hourly")
             )
@@ -848,14 +885,17 @@ class PostgresClient:
             )
             session.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY model_comparison_24h"))
 
-            # Legacy views (if they exist)
-            try:
-                session.execute(
-                    text("REFRESH MATERIALIZED VIEW CONCURRENTLY hourly_consumption_stats")
-                )
-                session.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY daily_price_stats"))
-            except Exception:
-                pass  # Views might not exist yet
+            optional_views = [
+                "hourly_consumption_stats",
+                "daily_price_stats",
+            ]
+            for view_name in optional_views:
+                exists = session.execute(
+                    text("SELECT to_regclass(:name)"),
+                    {"name": view_name},
+                ).scalar()
+                if exists:
+                    session.execute(text(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {view_name}"))
 
             session.commit()
 
