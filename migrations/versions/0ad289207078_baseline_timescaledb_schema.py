@@ -6,7 +6,7 @@ Create Date: 2025-11-08 07:01:59.227160
 
 Creates the initial TimescaleDB schema with:
 - Extensions (timescaledb, timescaledb_toolkit, pg_stat_monitor)
-- Hypertables (electricity_consumption, electricity_prices, weather_observations, predictions)
+- Hypertables (fingrid_power_actuals, fingrid_price_actuals, fmi_weather_observations, predictions)
 - Compression policies
 - Basic indexes (without forecast index - see next migration)
 - Continuous aggregates for analytics
@@ -28,12 +28,12 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     """Create baseline TimescaleDB schema.
 
-    This migration establishes the complete database schema from init_timescaledb_enhanced.sql,
+    This migration establishes the complete database schema from db/schema.sql,
     EXCLUDING the forecast index which will be added in a subsequent migration.
     """
     # Read and execute the initialization SQL
     # We execute this in one go since it's the initial schema
-    with open("init_timescaledb_enhanced.sql") as f:
+    with open("db/schema.sql") as f:
         baseline_sql = f.read()
 
     # Remove the forecast index from baseline (it will be added in next migration)
@@ -70,9 +70,9 @@ def downgrade() -> None:
     op.execute("DROP MATERIALIZED VIEW IF EXISTS model_comparison_24h CASCADE")
 
     # Drop hypertables (this also drops indexes and compression policies)
-    op.execute("DROP TABLE IF EXISTS electricity_consumption CASCADE")
-    op.execute("DROP TABLE IF EXISTS electricity_prices CASCADE")
-    op.execute("DROP TABLE IF EXISTS weather_observations CASCADE")
+    op.execute("DROP TABLE IF EXISTS fingrid_power_actuals CASCADE")
+    op.execute("DROP TABLE IF EXISTS fingrid_price_actuals CASCADE")
+    op.execute("DROP TABLE IF EXISTS fmi_weather_observations CASCADE")
     op.execute("DROP TABLE IF EXISTS predictions CASCADE")
 
     # Extensions can be left (they don't hurt and other databases might use them)

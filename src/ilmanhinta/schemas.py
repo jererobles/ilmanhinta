@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 
 class ElectricityColumns:
@@ -243,7 +243,7 @@ class PredictionRow(BaseModel):
 
     @field_validator("confidence_upper")
     @classmethod
-    def validate_confidence_bounds(cls, v: float, info) -> float:
+    def validate_confidence_bounds(cls, v: float, info: ValidationInfo) -> float:
         """Ensure confidence_upper >= confidence_lower."""
         if "confidence_lower" in info.data and v < info.data["confidence_lower"]:
             raise ValueError("confidence_upper must be >= confidence_lower")
@@ -251,7 +251,7 @@ class PredictionRow(BaseModel):
 
     @field_validator("predicted_consumption_mw")
     @classmethod
-    def validate_prediction_in_bounds(cls, v: float, info) -> float:
+    def validate_prediction_in_bounds(cls, v: float, info: ValidationInfo) -> float:
         """Ensure prediction is within confidence bounds if available."""
         if (
             "confidence_lower" in info.data

@@ -4,13 +4,15 @@ from pathlib import Path
 
 import polars as pl
 
-from ilmanhinta.clients.fingrid import FingridClient
 from ilmanhinta.clients.fmi import FMIClient
-from ilmanhinta.logging import logfire
+from ilmanhinta.db.postgres_client import PostgresClient
+from ilmanhinta.logging import get_logger
 from ilmanhinta.ml.model import ConsumptionModel
 from ilmanhinta.models.fmi import PredictionOutput
 from ilmanhinta.processing.features import FeatureEngineer
 from ilmanhinta.processing.joins import TemporalJoiner
+
+logger = get_logger(__name__)
 
 
 class Predictor:
@@ -19,7 +21,6 @@ class Predictor:
     def __init__(self, model_path: Path) -> None:
         """Initialize predictor with trained model."""
         self.model = ConsumptionModel(model_path)
-        self.fingrid_client = FingridClient()
         self.fmi_client = FMIClient()
 
     async def predict_next_24h(self) -> list[PredictionOutput]:
@@ -28,19 +29,26 @@ class Predictor:
 
         Returns hourly predictions with confidence intervals.
         """
-        logfire.info("Generating 24-hour consumption forecast")
+        logger.info("Generating 24-hour consumption forecast")
 
-        # 1. Fetch historical electricity data (consumption + production + wind + nuclear)
-        # This ensures we have ALL features that were used during training
-        historical_data = await self.fingrid_client.fetch_all_electricity_data(hours=24 * 7)
-        consumption_df = TemporalJoiner.merge_fingrid_datasets(historical_data)
+        # 1. Load historical electricity data from PostgreSQL (last 7 days)
+        # Ensures parity with training-time features and avoids duplicate scraping
+        db = PostgresClient()
+        try:
+            from datetime import UTC, datetime, timedelta
+
+            end_time = datetime.now(UTC)
+            start_time = end_time - timedelta(days=7)
+            consumption_df = db.get_joined_training_data(start_time, end_time)
+        finally:
+            db.close()
 
         # 2. Fetch weather forecast
         weather_forecast = self.fmi_client.fetch_forecast(hours=24)
         forecast_df = TemporalJoiner.fmi_to_polars(weather_forecast.observations)
 
         if forecast_df.is_empty():
-            logfire.error("No weather forecast available")
+            logger.error("No weather forecast available")
             return []
 
         # Rename weather columns to match model training features
@@ -62,7 +70,7 @@ class Predictor:
         forecast_df = TemporalJoiner.align_to_hourly(forecast_df)
 
         # Ensure both DataFrames share the same schema before vertical concatenation.
-        # consumption_df now has: [timestamp, consumption_mw, production_mw, wind_mw, nuclear_mw, net_import_mw]
+        # consumption_df now has: [timestamp, consumption_mw, production_mw, wind_mw, nuclear_mw, net_import_mw, price_eur_mwh]
         # forecast_df has weather columns: [temperature, humidity, wind_speed, wind_direction, pressure, precipitation_mm, cloud_cover]
         # Add missing weather columns to consumption_df as nulls so we can vstack later.
         weather_cols = [
@@ -81,7 +89,7 @@ class Predictor:
                     pl.lit(None, dtype=pl.Float64).alias(col)
                 )
 
-        logfire.info(
+        logger.info(
             f"Historical data columns: {consumption_df.columns} - includes all electricity features"
         )
 
@@ -126,12 +134,12 @@ class Predictor:
                     "nuclear_mw": [latest_nuclear],  # Use latest known value
                     "net_import_mw": [latest_net_import],  # Use latest known value
                     "temperature": [forecast_row["temperature"][0]],
-                    "humidity": [forecast_row["humidity"][0]],
                     "wind_speed": [forecast_row["wind_speed"][0]],
                     "wind_direction": [forecast_row["wind_direction"][0]],
+                    "cloud_cover": [forecast_row["cloud_cover"][0]],
+                    "humidity": [forecast_row["humidity"][0]],
                     "pressure": [forecast_row["pressure"][0]],
                     "precipitation_mm": [forecast_row["precipitation_mm"][0]],
-                    "cloud_cover": [forecast_row["cloud_cover"][0]],
                 }
             )
 
@@ -171,12 +179,12 @@ class Predictor:
                         "nuclear_mw": [latest_nuclear],  # Keep using latest known value
                         "net_import_mw": [latest_net_import],  # Keep using latest known value
                         "temperature": [None],
-                        "humidity": [None],
                         "wind_speed": [None],
                         "wind_direction": [None],
+                        "cloud_cover": [None],
+                        "humidity": [None],
                         "pressure": [None],
                         "precipitation_mm": [None],
-                        "cloud_cover": [None],
                     }
                 )
 
@@ -184,7 +192,7 @@ class Predictor:
                     "timestamp"
                 )
 
-        logfire.info(f"Generated {len(predictions)} hourly predictions")
+        logger.info(f"Generated {len(predictions)} hourly predictions")
 
         return predictions
 
@@ -196,12 +204,12 @@ class Predictor:
             return None
 
         peak = max(predictions, key=lambda p: p.predicted_consumption_mw)
-        logfire.info(
+        logger.info(
             f"Peak consumption predicted at {peak.timestamp}: {peak.predicted_consumption_mw:.2f} MW"
         )
 
         return peak
 
     async def close(self) -> None:
-        """Close API clients."""
-        await self.fingrid_client.close()
+        """Close any async resources (none for now)."""
+        return None

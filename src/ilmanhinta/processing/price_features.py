@@ -11,8 +11,10 @@ from typing import Literal
 
 import polars as pl
 
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
 from ilmanhinta.processing.holiday_features import add_holiday_features
+
+logger = get_logger(__name__)
 
 
 class PriceFeatureEngineer:
@@ -77,7 +79,7 @@ class PriceFeatureEngineer:
         # This replaces hardcoded FINNISH_HOLIDAYS with dynamic lookup
         df = add_holiday_features(df, time_col=time_col)
 
-        logfire.debug("Added calendar features")
+        logger.debug("Added calendar features")
         return df
 
     @staticmethod
@@ -182,7 +184,7 @@ class PriceFeatureEngineer:
 
         if feature_exprs:
             df = df.with_columns(feature_exprs)
-            logfire.debug(f"Added {len(feature_exprs)} weather features (mode={mode})")
+            logger.debug(f"Added {len(feature_exprs)} weather features (mode={mode})")
 
         return df
 
@@ -270,7 +272,7 @@ class PriceFeatureEngineer:
 
         if feature_exprs:
             df = df.with_columns(feature_exprs)
-            logfire.debug(
+            logger.debug(
                 f"Added {len(feature_exprs)} consumption/production features (mode={mode})"
             )
 
@@ -298,7 +300,7 @@ class PriceFeatureEngineer:
         lag_exprs = [pl.col(price_col).shift(lag).alias(f"price_lag_{lag}h") for lag in lags]
 
         df = df.with_columns(lag_exprs)
-        logfire.debug(f"Added price lag features: {lags}")
+        logger.debug(f"Added price lag features: {lags}")
         return df
 
     @staticmethod
@@ -321,22 +323,22 @@ class PriceFeatureEngineer:
             rolling_exprs.extend(
                 [
                     pl.col(price_col)
-                    .rolling_mean(window_size=window, min_periods=1)
+                    .rolling_mean(window_size=window)
                     .alias(f"price_rolling_mean_{window}h"),
                     pl.col(price_col)
-                    .rolling_std(window_size=window, min_periods=1)
+                    .rolling_std(window_size=window)
                     .alias(f"price_rolling_std_{window}h"),
                     pl.col(price_col)
-                    .rolling_min(window_size=window, min_periods=1)
+                    .rolling_min(window_size=window)
                     .alias(f"price_rolling_min_{window}h"),
                     pl.col(price_col)
-                    .rolling_max(window_size=window, min_periods=1)
+                    .rolling_max(window_size=window)
                     .alias(f"price_rolling_max_{window}h"),
                 ]
             )
 
         df = df.with_columns(rolling_exprs)
-        logfire.debug(f"Added price rolling features: {windows}")
+        logger.debug(f"Added price rolling features: {windows}")
         return df
 
     @staticmethod
@@ -357,7 +359,7 @@ class PriceFeatureEngineer:
 
         if diff_exprs:
             df = df.with_columns(diff_exprs)
-            logfire.debug("Added price diff features")
+            logger.debug("Added price diff features")
 
         return df
 
@@ -373,13 +375,13 @@ class PriceFeatureEngineer:
             return df
 
         if historical_prices.is_empty():
-            logfire.warning("No historical prices provided - skipping price lag features")
+            logger.warning("No historical prices provided - skipping price lag features")
             return df
 
         required_cols = {"time", "price_eur_mwh"}
         missing = required_cols - set(historical_prices.columns)
         if missing:
-            logfire.warning("Missing columns %s in historical prices", sorted(missing))
+            logger.warning("Missing columns %s in historical prices", sorted(missing))
             return df
 
         history = (
@@ -410,7 +412,7 @@ class PriceFeatureEngineer:
         ]
 
         if not feature_cols:
-            logfire.warning("Price history features could not be generated")
+            logger.warning("Price history features could not be generated")
             return df
 
         features_df = (
@@ -434,7 +436,7 @@ class PriceFeatureEngineer:
 
         Returns DataFrame with all features + target.
         """
-        logfire.info(f"Creating training features from {len(df)} records")
+        logger.info(f"Creating training features from {len(df)} records")
 
         # 1. Calendar features (always available)
         df = PriceFeatureEngineer.add_calendar_features(df, time_col)
@@ -454,7 +456,7 @@ class PriceFeatureEngineer:
         # 6. Price diffs (momentum signals)
         df = PriceFeatureEngineer.add_price_diff_features(df)
 
-        logfire.info(f"Training features complete: {len(df.columns)} columns")
+        logger.info(f"Training features complete: {len(df.columns)} columns")
         return df
 
     @staticmethod
@@ -477,7 +479,7 @@ class PriceFeatureEngineer:
 
         Returns DataFrame ready for model.predict().
         """
-        logfire.info(f"Creating prediction features for {len(df)} forecast periods")
+        logger.info(f"Creating prediction features for {len(df)} forecast periods")
 
         # 1. Calendar features (available for future times)
         df = PriceFeatureEngineer.add_calendar_features(df, time_col)
@@ -491,5 +493,5 @@ class PriceFeatureEngineer:
         # 4. Price lag/rolling features via historical prices
         df = PriceFeatureEngineer.add_price_history_features(df, historical_prices, time_col)
 
-        logfire.info(f"Prediction features complete: {len(df.columns)} columns")
+        logger.info(f"Prediction features complete: {len(df.columns)} columns")
         return df

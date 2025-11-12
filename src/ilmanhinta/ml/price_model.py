@@ -28,8 +28,34 @@ try:
 except ImportError:
     HAS_LIGHTGBM = False
 
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
 from ilmanhinta.processing.dataset_builder import get_feature_names, split_train_test_temporal
+
+logger = get_logger(__name__)
+
+# Map training-only column names to the names used during prediction.
+TRAIN_TO_PREDICT_COLUMN_MAP: dict[str, str] = {
+    # Electricity system metrics
+    "consumption_mw": "consumption_forecast_mw",
+    "production_mw": "production_forecast_mw",
+    "wind_mw": "wind_forecast_mw",
+    # Weather observations vs. forecast column names
+    "temperature_c": "temperature",
+    "wind_speed_ms": "wind_speed",
+    "humidity_percent": "humidity",
+    "pressure_hpa": "pressure",
+}
+
+# Columns/derived features that we cannot reproduce at prediction time with the current
+# data sources (e.g. no nuclear or net import forecasts yet). Keep them out of training.
+TRAIN_ONLY_FEATURES: list[str] = [
+    "nuclear_mw",
+    "net_import_mw",
+    "nuclear_share",
+    "import_dependency",
+    "is_importing",
+    "is_exporting",
+]
 
 
 class PricePredictionModel:
@@ -50,7 +76,7 @@ class PricePredictionModel:
         """
         self.model_type = model_type
         self.model_params = model_params or {}
-        self.model = None
+        self.model: Any = None
         self.feature_names: list[str] = []
         self.feature_importance: dict[str, float] = {}
         self.training_metrics: dict[str, float] = {}
@@ -71,13 +97,19 @@ class PricePredictionModel:
         Returns:
             Dictionary of training metrics
         """
-        logfire.info(f"Training {self.model_type} model on {len(train_df)} samples")
+        logger.info(f"Training {self.model_type} model on {len(train_df)} samples")
+
+        # Align column names so they match what PredictionDatasetBuilder produces.
+        train_df = self._align_training_columns(train_df)
 
         # Split into train/validation (temporal)
         train_data, val_data = split_train_test_temporal(train_df, test_size=validation_split)
 
         # Get features and target
-        self.feature_names = get_feature_names(train_df, exclude=[target_col])
+        excluded_cols = (
+            list(TRAIN_TO_PREDICT_COLUMN_MAP.keys()) + TRAIN_ONLY_FEATURES + [target_col]
+        )
+        self.feature_names = get_feature_names(train_df, exclude=excluded_cols)
 
         X_train = train_data.select(self.feature_names).to_numpy()
         y_train = train_data.select(target_col).to_numpy().ravel()
@@ -85,8 +117,8 @@ class PricePredictionModel:
         X_val = val_data.select(self.feature_names).to_numpy()
         y_val = val_data.select(target_col).to_numpy().ravel()
 
-        logfire.info(f"Training set: {len(X_train)} samples, {len(self.feature_names)} features")
-        logfire.info(f"Validation set: {len(X_val)} samples")
+        logger.info(f"Training set: {len(X_train)} samples, {len(self.feature_names)} features")
+        logger.info(f"Validation set: {len(X_val)} samples")
 
         # Create and train model
         self.model = self._create_model()
@@ -119,9 +151,9 @@ class PricePredictionModel:
             "val_mape": self._calculate_mape(y_val, y_pred),
         }
 
-        logfire.info(f"Validation MAE: {self.training_metrics['val_mae']:.2f} EUR/MWh")
-        logfire.info(f"Validation RMSE: {self.training_metrics['val_rmse']:.2f} EUR/MWh")
-        logfire.info(f"Validation R²: {self.training_metrics['val_r2']:.3f}")
+        logger.info(f"Validation MAE: {self.training_metrics['val_mae']:.2f} EUR/MWh")
+        logger.info(f"Validation RMSE: {self.training_metrics['val_rmse']:.2f} EUR/MWh")
+        logger.info(f"Validation R²: {self.training_metrics['val_r2']:.3f}")
 
         # Calculate feature importance
         self._calculate_feature_importance()
@@ -141,7 +173,16 @@ class PricePredictionModel:
         if self.model is None:
             raise RuntimeError("Model not trained yet. Call train() first.")
 
-        logfire.info(f"Predicting prices for {len(df)} periods")
+        logger.info(f"Predicting prices for {len(df)} periods")
+
+        missing_features = [col for col in self.feature_names if col not in df.columns]
+        if missing_features:
+            missing_list = ", ".join(sorted(missing_features))
+            raise ValueError(
+                "Prediction dataset is missing required features: "
+                f"{missing_list}. Ensure PredictionDatasetBuilder generates the "
+                "same feature set that was used during training."
+            )
 
         # Extract features
         X = df.select(self.feature_names).to_numpy()
@@ -174,7 +215,7 @@ class PricePredictionModel:
             }
         )
 
-        logfire.info(
+        logger.info(
             f"Predictions: mean={predictions.mean():.2f}, "
             f"min={predictions.min():.2f}, max={predictions.max():.2f} EUR/MWh"
         )
@@ -200,7 +241,7 @@ class PricePredictionModel:
         }
 
         joblib.dump(model_data, path)
-        logfire.info(f"Model saved to {path}")
+        logger.info(f"Model saved to {path}")
 
     def load(self, path: str | Path) -> None:
         """Load trained model from disk."""
@@ -217,9 +258,9 @@ class PricePredictionModel:
         self.feature_importance = model_data.get("feature_importance", {})
         self.training_metrics = model_data.get("training_metrics", {})
 
-        logfire.info(f"Model loaded from {path}")
+        logger.info(f"Model loaded from {path}")
 
-    def _create_model(self):
+    def _create_model(self) -> Any:
         """Create model instance based on model_type."""
         if self.model_type == "xgboost":
             if not HAS_XGBOOST:
@@ -297,12 +338,12 @@ class PricePredictionModel:
                     self.feature_importance.items(), key=lambda x: x[1], reverse=True
                 )[:10]
 
-                logfire.info("Top 10 important features:")
+                logger.info("Top 10 important features:")
                 for feat, imp in top_features:
-                    logfire.info(f"  {feat}: {imp:.4f}")
+                    logger.info(f"  {feat}: {imp:.4f}")
 
         except Exception as e:
-            logfire.warning(f"Could not calculate feature importance: {e}")
+            logger.warning(f"Could not calculate feature importance: {e}")
 
     @staticmethod
     def _calculate_mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -312,7 +353,7 @@ class PricePredictionModel:
         if not mask.any():
             return np.nan
 
-        return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
+        return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100)
 
     def get_feature_importance_df(self) -> pl.DataFrame:
         """Get feature importance as a DataFrame (for analysis/visualization).
@@ -329,5 +370,25 @@ class PricePredictionModel:
                 "importance": list(self.feature_importance.values()),
             }
         ).sort("importance", descending=True)
+
+        return df
+
+    def _align_training_columns(self, df: pl.DataFrame) -> pl.DataFrame:
+        """Duplicate training columns so names match prediction-time features."""
+        additional_columns = []
+        aligned_names: list[str] = []
+
+        for actual_name, prediction_name in TRAIN_TO_PREDICT_COLUMN_MAP.items():
+            if actual_name in df.columns and prediction_name not in df.columns:
+                additional_columns.append(pl.col(actual_name).alias(prediction_name))
+                aligned_names.append(f"{actual_name}->{prediction_name}")
+
+        if additional_columns:
+            df = df.with_columns(additional_columns)
+            logger.debug(
+                "Aligned %d training columns to prediction naming: %s",
+                len(additional_columns),
+                aligned_names,
+            )
 
         return df

@@ -1,13 +1,15 @@
 """FMI (Finnish Meteorological Institute) API client."""
 
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 
 from fmiopendata.wfs import download_stored_query
 
 from ilmanhinta.config import settings
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
 from ilmanhinta.models.fmi import FMIObservation, WeatherData
+
+logger = get_logger(__name__)
 
 
 class FMIClient:
@@ -24,7 +26,7 @@ class FMIClient:
         """Fetch weather observations from FMI."""
         station = station_id or self.station_id
 
-        logfire.info(
+        logger.info(
             f"Fetching FMI observations for station {station} from {start_time} to {end_time}"
         )
 
@@ -54,7 +56,7 @@ class FMIClient:
                         .get("name", "Unknown")
                     )
 
-                # logfire.info(f"fetch_observations: data={getattr(obs, 'data', None)}")
+                # logger.info(f"fetch_observations: data={getattr(obs, 'data', None)}")
                 data = getattr(obs, "data", None)
                 if isinstance(data, dict) and data:
                     # Two possible shapes observed from fmiopendata for observations::weather::multipointcoverage:
@@ -128,7 +130,7 @@ class FMIClient:
 
             observations = sorted(observations_dict.values(), key=lambda o: o.timestamp)
 
-            logfire.info(f"Fetched {len(observations)} observations from FMI station {station}")
+            logger.info(f"Fetched {len(observations)} observations from FMI station {station}")
 
             return WeatherData(
                 station_id=station,
@@ -137,7 +139,7 @@ class FMIClient:
             )
 
         except Exception as e:
-            logfire.error(f"Error fetching FMI data: {e}")
+            logger.error(f"Error fetching FMI data: {e}")
             raise
 
     def fetch_realtime_observations(self, hours: int = 24) -> WeatherData:
@@ -152,7 +154,7 @@ class FMIClient:
         start_time = datetime.now(UTC)
         end_time = start_time + timedelta(hours=hours)
 
-        logfire.info(f"Fetching FMI forecast for station {station} from {start_time} to {end_time}")
+        logger.info(f"Fetching FMI forecast for station {station} from {start_time} to {end_time}")
 
         try:
             # Resolve station coordinates using observations metadata so we can
@@ -252,7 +254,7 @@ class FMIClient:
                 station, {}
             ).get("name", "Unknown")
 
-            logfire.info(f"Fetched {len(observations)} forecast points from FMI station {station}")
+            logger.info(f"Fetched {len(observations)} forecast points from FMI station {station}")
 
             return WeatherData(
                 station_id=station,
@@ -261,7 +263,7 @@ class FMIClient:
             )
 
         except Exception as e:
-            logfire.error(f"Error fetching FMI forecast: {e}")
+            logger.error(f"Error fetching FMI forecast: {e}")
             raise
 
     def _resolve_station_coords_and_name(self, station: str) -> tuple[float, float, str]:
@@ -273,24 +275,24 @@ class FMIClient:
         # Look back a short window to get metadata; observations queries accept fmisid
         now = datetime.now(UTC)
         windows = [timedelta(hours=6), timedelta(hours=168)]
-        info: dict = {}
-        meta_snapshot: dict | None = None
+        info: dict[str, Any] = {}
+        meta_snapshot: dict[str, Any] | None = None
 
-        def _match_from_meta(meta: object, st: str) -> dict:
+        def _match_from_meta(meta: object, st: str) -> dict[str, Any]:
             """Try multiple strategies to extract station metadata from various shapes."""
             if not isinstance(meta, dict):
                 return {}
 
             # 1) Direct key match (string id)
             if st in meta and isinstance(meta[st], dict):
-                return cast(dict, meta[st])
+                return cast(dict[str, Any], meta[st])
 
             # 2) Integer key match
             if st.isdigit():
                 try:
                     st_int = int(st)
                     if st_int in meta and isinstance(meta[st_int], dict):
-                        return cast(dict, meta[st_int])
+                        return cast(dict[str, Any], meta[st_int])
                 # Ignore exceptions here; failure to convert or lookup is expected as part of multi-strategy matching.
                 except Exception:
                     pass
@@ -299,7 +301,7 @@ class FMIClient:
             try:
                 as_str_keys = {str(k): v for k, v in meta.items()}
                 if st in as_str_keys and isinstance(as_str_keys[st], dict):
-                    return cast(dict, as_str_keys[st])
+                    return cast(dict[str, Any], as_str_keys[st])
             except Exception:
                 pass
 
@@ -314,7 +316,7 @@ class FMIClient:
                         continue
                     try:
                         if str(sid) == st:
-                            return cast(dict, v)
+                            return v
                     except Exception:
                         continue
 
@@ -386,7 +388,7 @@ class FMIClient:
                         lon_f = float(parts[0])
                         lat_f = float(parts[1])
                 except Exception as e:
-                    logfire.error(f"Failed to parse WKT coordinates from string '{s}': {e}")
+                    logger.error(f"Failed to parse WKT coordinates from string '{s}': {e}")
 
         # Otherwise, coerce individual fields
         if lat_f is None:

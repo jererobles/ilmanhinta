@@ -1,6 +1,6 @@
 """Application configuration using Pydantic v2 settings."""
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # Fingrid API
-    fingrid_api_key: str = Field(..., description="Fingrid API key from data.fingrid.fi")
+    fingrid_api_key: str = Field(default="", description="Fingrid API key from data.fingrid.fi")
 
     # FMI Settings
     fmi_station_id: str = Field(default="101004", description="FMI station ID (Helsinki)")
@@ -22,10 +22,17 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", description="Logging level")
     cache_ttl_seconds: int = Field(default=180, description="Cache TTL for real-time data")
 
-    # Logfire (Pydantic observability)
-    logfire_token: str | None = Field(default=None, description="Logfire API token")
-    logfire_project: str = Field(default="ilmanhinta", description="Logfire project name")
-    logfire_environment: str = Field(default="production", description="Environment name")
+    # Observability
+    observability_service_name: str = Field(
+        default="ilmanhinta",
+        validation_alias=AliasChoices("OTEL_SERVICE_NAME", "LOGFIRE_PROJECT"),
+        description="Service name reported in OpenTelemetry exports",
+    )
+    observability_environment: str = Field(
+        default="production",
+        validation_alias=AliasChoices("OTEL_ENVIRONMENT", "LOGFIRE_ENVIRONMENT"),
+        description="Environment label attached to telemetry exports",
+    )
 
     # ML Model
     model_retrain_hours: int = Field(default=24, description="Hours between model retraining")
@@ -34,6 +41,13 @@ class Settings(BaseSettings):
     # API
     api_host: str = Field(default="0.0.0.0", description="API host")
     api_port: int = Field(default=8000, description="API port")
+
+    # API
+    postgres_user: str | None = Field(default=None, description="Postgres username")
+    postgres_password: str | None = Field(default=None, description="Postgres password")
+    postgres_db: str = Field(default="ilmanhinta", description="Postgres database")
+    postgres_host: str = Field(default="localhost", description="Postgres host")
+    postgres_port: int = Field(default=5432, description="Postgres port")
 
     # Dagster
     dagster_home: str = Field(default="/app/dagster_home", description="Dagster home directory")

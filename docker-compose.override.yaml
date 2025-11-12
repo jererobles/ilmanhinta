@@ -28,14 +28,14 @@ services:
   # Schema migration services
   schema-migrator-sync:
     profiles: ["signoz"]
-    command: ["sync", "--dsn=tcp://clickhouse:9000"]  # Remove --up= flag
+    command: ["sync", "--dsn=tcp://clickhouse:9000"] # Remove --up= flag
     networks:
       - signoz-net
       - default
 
   schema-migrator-async:
     profiles: ["signoz"]
-    command: ["async", "--dsn=tcp://clickhouse:9000"]  # Remove --up= flag
+    command: ["async", "--dsn=tcp://clickhouse:9000"] # Remove --up= flag
     networks:
       - signoz-net
       - default
@@ -46,17 +46,73 @@ services:
     networks:
       - signoz-net
       - default
+    environment:
+      # Required for secure session tokens in SigNoz UI/API
+      SIGNOZ_TOKENIZER_JWT_SECRET: my-strong-random-secret
 
-  # OpenTelemetry Collector (replaces otel-collector-lite when signoz profile is active)
+  # OpenTelemetry Collector
   otel-collector:
     profiles: ["signoz"]
+    environment:
+      OTEL_LOG_LEVEL: debug # Add this
     networks:
-      signoz-net:
-      default:
-        aliases:
-          - otel-collector  # Network alias so our apps can find it
-    # Custom config extends official config to add PostgreSQL metrics scraping
-    volumes:
-      - ./otel-signoz.yaml:/etc/otel-collector-config.yaml:ro
+      - signoz-net
+      - default
+
+  # Provision initial SigNoz org/admin on first run
+  signoz-bootstrap:
+    profiles: ["signoz"]
+    image: curlimages/curl:8.10.1
     depends_on:
-      - sql-exporter
+      signoz:
+        condition: service_healthy
+    networks:
+      - signoz-net
+      - default
+    environment:
+      # Configure these in your .env to control bootstrap user/org
+      SIGNOZ_BOOTSTRAP_NAME: ${SIGNOZ_BOOTSTRAP_NAME:-signoz}
+      SIGNOZ_BOOTSTRAP_EMAIL: ${SIGNOZ_BOOTSTRAP_EMAIL:-admin@example.com}
+      SIGNOZ_BOOTSTRAP_PASSWORD: ${SIGNOZ_BOOTSTRAP_PASSWORD:-ilmanhintaHunter2.}
+      SIGNOZ_BOOTSTRAP_ORG_NAME: ${SIGNOZ_BOOTSTRAP_ORG_NAME:-ilmanhinta}
+      SIGNOZ_BOOTSTRAP_ORG_DISPLAY: ${SIGNOZ_BOOTSTRAP_ORG_DISPLAY:-Ilmanhinta}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -x
+        echo "Waiting for SigNoz API..."
+        until curl -sf http://signoz:8080/api/v1/health >/dev/null; do sleep 2; done
+        echo "Provisioning SigNoz initial org/admin..."
+        echo "Email: $$SIGNOZ_BOOTSTRAP_EMAIL"
+        echo "Org: $$SIGNOZ_BOOTSTRAP_ORG_NAME ($$SIGNOZ_BOOTSTRAP_ORG_DISPLAY)"
+
+        response=$$(curl -s -w "\n%{http_code}" \
+          -H "Content-Type: application/json" \
+          -X POST http://signoz:8080/api/v1/register \
+          -d "{
+            \"name\": \"$$SIGNOZ_BOOTSTRAP_NAME\",
+            \"email\": \"$$SIGNOZ_BOOTSTRAP_EMAIL\",
+            \"password\": \"$$SIGNOZ_BOOTSTRAP_PASSWORD\",
+            \"orgName\": \"$$SIGNOZ_BOOTSTRAP_ORG_NAME\",
+            \"orgDisplayName\": \"$$SIGNOZ_BOOTSTRAP_ORG_DISPLAY\"
+          }")
+
+        http_code=$$(echo "$$response" | tail -n1)
+        body=$$(echo "$$response" | sed '$$d')
+
+        echo "HTTP Status: $$http_code"
+        echo "Response Body: $$body"
+
+        if [ "$$http_code" = "200" ] || [ "$$http_code" = "201" ]; then
+          echo "✓ SigNoz admin/org created successfully"
+          exit 0
+        fi
+
+        if echo "$$body" | grep -qi "self-registration is disabled\|already exists"; then
+          echo "⚠ SigNoz already provisioned (this is OK)"
+          exit 0
+        fi
+
+        echo "✗ Bootstrap failed with code $$http_code"
+        exit 1
+    restart: "no"

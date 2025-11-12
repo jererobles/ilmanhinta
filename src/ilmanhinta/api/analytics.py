@@ -11,7 +11,7 @@ import psycopg
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from ilmanhinta.db.prediction_store import _get_database_url
+from ilmanhinta.db.postgres_client import get_database_url
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -104,7 +104,7 @@ async def get_daily_accuracy(
     """
 
     try:
-        with psycopg.connect(_get_database_url()) as conn, conn.cursor() as cur:
+        with psycopg.connect(get_database_url()) as conn, conn.cursor() as cur:
             cur.execute(query, params)
             rows = cur.fetchall()
 
@@ -153,13 +153,13 @@ async def compare_models() -> list[ModelComparison]:
     """
 
     try:
-        with psycopg.connect(_get_database_url()) as conn, conn.cursor() as cur:
+        with psycopg.connect(get_database_url()) as conn, conn.cursor() as cur:
             cur.execute(query)
             rows = cur.fetchall()
 
         if not rows:
             raise HTTPException(
-                status_code=404, detail="No predictions available for the last 24 hours"
+                status_code=404, detail="No consumption predictions available for the last 24 hours"
             )
 
         return [
@@ -213,7 +213,7 @@ async def get_hourly_consumption(
     """
 
     try:
-        with psycopg.connect(_get_database_url()) as conn, conn.cursor() as cur:
+        with psycopg.connect(get_database_url()) as conn, conn.cursor() as cur:
             cur.execute(query, (hours,))
             rows = cur.fetchall()
 
@@ -243,7 +243,7 @@ async def get_analytics_summary() -> dict[str, Any]:
         Summary statistics including best model, data coverage, and health metrics
     """
     try:
-        with psycopg.connect(_get_database_url()) as conn, conn.cursor() as cur:
+        with psycopg.connect(get_database_url()) as conn, conn.cursor() as cur:
             # Get best performing model from last 24h
             cur.execute(
                 """
@@ -259,9 +259,9 @@ async def get_analytics_summary() -> dict[str, Any]:
             cur.execute(
                 """
                 SELECT
-                    (SELECT COUNT(*) FROM electricity_consumption) as consumption_count,
-                    (SELECT COUNT(*) FROM weather_observations) as weather_count,
-                    (SELECT COUNT(*) FROM predictions) as predictions_count
+                    (SELECT COUNT(*) FROM fingrid_power_actuals) as consumption_count,
+                    (SELECT COUNT(*) FROM fmi_weather_observations) as weather_count,
+                    (SELECT COUNT(*) FROM consumption_model_predictions) as predictions_count
             """
             )
             counts = cur.fetchone()
@@ -269,16 +269,17 @@ async def get_analytics_summary() -> dict[str, Any]:
             # Get latest prediction timestamp
             cur.execute(
                 """
-                SELECT MAX(timestamp) FROM predictions
+                SELECT MAX(timestamp) FROM consumption_model_predictions
             """
             )
-            latest_prediction = cur.fetchone()[0]
+            result = cur.fetchone()
+            latest_prediction = result[0] if result else None
 
         return {
             "best_model_24h": {
                 "model_type": best_model[0] if best_model else None,
                 "mae_mw": best_model[1] if best_model else None,
-                "predictions": best_model[2] if best_model else 0,
+                "prediction_count": best_model[2] if best_model else 0,
             },
             "data_coverage": {
                 "consumption_rows": counts[0] if counts else 0,

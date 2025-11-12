@@ -1,8 +1,13 @@
 .PHONY: help install lint format test clean run-api run-dagster docker-build docker-run setup check-env ensure-dirs \
 	docker-up docker-up-full docker-down docker-restart docker-logs docker-ps docker-exec docker-shell docker-build-fresh \
-	db-migrate db-backup db-restore prod-up prod-down submodule-init submodule-update submodule-status
+	db-migrate db-backup db-restore prod-up prod-down submodule-init submodule-update submodule-status backfill
 
 SKIP_PRE_COMMIT_INSTALL ?= 0
+BACKFILL_HOURS ?= 720
+BACKFILL_CHUNK_HOURS ?= 240
+BACKFILL_PRICE_BUFFER_HOURS ?= 168
+BACKFILL_TARGETS ?= actuals prices forecasts weather
+BACKFILL_FORECAST_TYPES ?= consumption production wind
 
 help:
 	@echo "Ilmanhinta - Finnish Weather → Energy ETL Pipeline"
@@ -16,6 +21,7 @@ help:
 	@echo "  make clean         Clean build artifacts"
 	@echo "  make run-api       Start FastAPI server"
 	@echo "  make run-dagster   Start Dagster UI"
+	@echo "  make backfill      Backfill Fingrid/FMI history (override BACKFILL_*)"
 	@echo "  make check-env     Validate required env vars"
 	@echo ""
 	@echo "Docker Compose commands:"
@@ -42,7 +48,7 @@ help:
 
 install:
 	@echo "📦 Installing dependencies..."
-	uv pip install -e ".[dev]"
+	uv sync --frozen
 	@if [ "$(SKIP_PRE_COMMIT_INSTALL)" = "1" ]; then \
 		echo "⏭️  Skipping pre-commit install (SKIP_PRE_COMMIT_INSTALL=1)"; \
 	else \
@@ -69,12 +75,12 @@ ensure-dirs:
 
 lint:
 	@echo "🔍 Running linter..."
-	ruff check .
+	uv run ruff check .
 
 format:
 	@echo "✨ Formatting code..."
-	ruff format .
-	ruff check --fix .
+	uv run ruff format .
+	uv run ruff check --fix .
 
 test:
 	@echo "🧪 Running tests..."
@@ -90,11 +96,20 @@ clean:
 
 run-api: check-env
 	@echo "🚀 Starting FastAPI server..."
-	uvicorn ilmanhinta.api.main:app --reload --host 0.0.0.0 --port 8000
+	uvicorn ilmanhinta.api.main:app --reload --host 0.0.0.0 --port 8001
 
 run-dagster: check-env
 	@echo "🔧 Starting Dagster UI..."
 	dagster dev -m ilmanhinta.dagster
+
+backfill: check-env
+	@echo "📚 Backfilling datasets ($(BACKFILL_HOURS)h window; targets: $(BACKFILL_TARGETS))..."
+	uv run python -m ilmanhinta.scripts.backfill_data \
+		--hours $(BACKFILL_HOURS) \
+		--chunk-hours $(BACKFILL_CHUNK_HOURS) \
+		--price-buffer-hours $(BACKFILL_PRICE_BUFFER_HOURS) \
+		--targets $(BACKFILL_TARGETS) \
+		--forecast-types $(BACKFILL_FORECAST_TYPES)
 
 docker-build:
 	@echo "🐳 Building Docker image..."
@@ -143,6 +158,11 @@ docker-down:
 	docker-compose --profile lite --profile signoz down
 	@echo "✅ Services stopped"
 
+docker-clean:
+	@echo "🧹 Removing Docker Compose services and volumes..."
+	docker-compose --profile lite --profile signoz down -v
+	@echo "✅ Services and volumes removed"
+
 docker-restart:
 	@echo "🔄 Restarting Docker Compose services..."
 	docker-compose restart
@@ -181,7 +201,7 @@ prod-down:
 # Database management
 db-migrate:
 	@echo "🗄️  Running database migrations..."
-	docker-compose exec postgres psql -U api -d ilmanhinta -f /docker-entrypoint-initdb.d/init.sql
+	docker-compose exec postgres psql -U api -d ilmanhinta -f /docker-entrypoint-initdb.d/01_schema.sql
 	@echo "✅ Migrations complete"
 
 db-backup:

@@ -2,50 +2,46 @@ name: CI/CD
 
 on:
   push:
-    branches: [main, claude/*]
+    branches: [main]
   pull_request:
     branches: [main]
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11"]
-
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v2
+        uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version-file: "pyproject.toml"
 
       - name: Install dependencies
         run: |
-          uv pip install --system -e ".[dev]"
+          uv sync --frozen
 
       - name: Run ruff (lint)
         run: |
-          ruff check .
+          uv run ruff check .
 
       - name: Run ruff (format)
         run: |
-          ruff format --check .
+          uv run ruff format --check .
 
       - name: Run mypy
         run: |
-          mypy src/ilmanhinta --ignore-missing-imports
-        continue-on-error: true  # Type checking can be strict
+          uv run mypy src/ilmanhinta
+        continue-on-error: true # Type checking can be strict
 
       - name: Run tests
         run: |
-          pytest tests/ -v --cov=src/ilmanhinta --cov-report=xml
+          uv run pytest tests/ -v --cov=src/ilmanhinta --cov-report=xml
         env:
           FINGRID_API_KEY: "test_key"
 

@@ -9,8 +9,10 @@ import polars as pl
 
 from ilmanhinta.config import settings
 from ilmanhinta.db.postgres_client import PostgresClient
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
 from ilmanhinta.processing.price_features import PriceFeatureEngineer
+
+logger = get_logger(__name__)
 
 
 class TrainingDatasetBuilder:
@@ -33,7 +35,7 @@ class TrainingDatasetBuilder:
         Returns:
             DataFrame with features + target (price_eur_mwh)
         """
-        logfire.info(f"Building training dataset from {start_time} to {end_time}")
+        logger.info(f"Building training dataset from {start_time} to {end_time}")
 
         # Fetch all required data
         consumption = self.db.get_consumption(start_time, end_time)
@@ -46,7 +48,7 @@ class TrainingDatasetBuilder:
         if len(prices) == 0:
             raise ValueError("No price data found for training period")
         if len(weather) == 0:
-            logfire.warning("No weather data found - proceeding without weather features")
+            logger.warning("No weather data found - proceeding without weather features")
 
         # Resample to consistent frequency (handle missing data)
         consumption = self._resample_consumption(consumption, resample_freq)
@@ -85,14 +87,14 @@ class TrainingDatasetBuilder:
         final_count = len(df)
 
         if final_count < initial_count:
-            logfire.info(f"Dropped {initial_count - final_count} rows with null prices")
+            logger.info(f"Dropped {initial_count - final_count} rows with null prices")
 
         # Drop rows with too many null features (from lag features)
         # Keep rows where at least 80% of columns are non-null
         null_threshold = int(len(df.columns) * 0.2)  # Allow 20% nulls
         df = df.filter(pl.sum_horizontal(pl.all().is_null()) <= null_threshold)
 
-        logfire.info(f"Training dataset ready: {len(df)} samples, {len(df.columns)} features")
+        logger.info(f"Training dataset ready: {len(df)} samples, {len(df.columns)} features")
 
         return df
 
@@ -196,11 +198,11 @@ class PredictionDatasetBuilder:
         Returns:
             DataFrame ready for model.predict()
         """
-        logfire.info(f"Building prediction dataset for {forecast_start} to {forecast_end}")
+        logger.info(f"Building prediction dataset for {forecast_start} to {forecast_end}")
 
         # Fetch forecasts
-        weather_fcst = self._get_weather_forecasts(forecast_start, forecast_end)
-        fingrid_fcst = self._get_fingrid_forecasts(forecast_start, forecast_end)
+        weather_fcst = self._get_fmi_weather_forecasts(forecast_start, forecast_end)
+        fingrid_fcst = self._get_fingrid_power_forecasts(forecast_start, forecast_end)
 
         # Fetch historical prices for lag features
         hist_start = forecast_start - timedelta(hours=lookback_hours)
@@ -211,7 +213,7 @@ class PredictionDatasetBuilder:
 
         if not fingrid_fcst.is_empty():
             # Pivot Fingrid forecasts to wide format
-            fingrid_wide = self._pivot_fingrid_forecasts(fingrid_fcst)
+            fingrid_wide = self._pivot_fingrid_power_forecasts(fingrid_fcst)
             df = df.join(fingrid_wide, on="forecast_time", how="left")
 
         # Create features
@@ -219,21 +221,21 @@ class PredictionDatasetBuilder:
             df, historical_prices=historical_prices, time_col="forecast_time"
         )
 
-        logfire.info(f"Prediction dataset ready: {len(df)} samples, {len(df.columns)} features")
+        logger.info(f"Prediction dataset ready: {len(df)} samples, {len(df.columns)} features")
 
         return df
 
-    def _get_weather_forecasts(self, start_time: datetime, end_time: datetime) -> pl.DataFrame:
+    def _get_fmi_weather_forecasts(self, start_time: datetime, end_time: datetime) -> pl.DataFrame:
         """Get latest weather forecasts for the range from TimescaleDB."""
 
-        df = self.db.get_weather_forecasts(
+        df = self.db.get_fmi_weather_forecasts(
             start_time=start_time,
             end_time=end_time,
             station_id=self.station_id,
         )
 
         if df.is_empty():
-            logfire.warning("No weather forecasts found between %s and %s", start_time, end_time)
+            logger.warning("No weather forecasts found between %s and %s", start_time, end_time)
             return df
 
         rename_map = {
@@ -251,23 +253,25 @@ class PredictionDatasetBuilder:
         df = df.sort("forecast_time")
         return df
 
-    def _get_fingrid_forecasts(self, start_time: datetime, end_time: datetime) -> pl.DataFrame:
+    def _get_fingrid_power_forecasts(
+        self, start_time: datetime, end_time: datetime
+    ) -> pl.DataFrame:
         """Get Fingrid forecasts from database."""
 
-        df = self.db.get_fingrid_forecasts(
+        df = self.db.get_fingrid_power_forecasts(
             start_time=start_time,
             end_time=end_time,
             forecast_types=self.DEFAULT_FORECAST_TYPES,
         )
 
         if df.is_empty():
-            logfire.warning("No Fingrid forecasts found between %s and %s", start_time, end_time)
+            logger.warning("No Fingrid forecasts found between %s and %s", start_time, end_time)
         else:
             df = df.sort("forecast_time")
 
         return df
 
-    def _pivot_fingrid_forecasts(self, df: pl.DataFrame) -> pl.DataFrame:
+    def _pivot_fingrid_power_forecasts(self, df: pl.DataFrame) -> pl.DataFrame:
         """Pivot Fingrid forecasts from long to wide format.
 
         Input:
@@ -321,9 +325,7 @@ def split_train_test_temporal(
     train = df[:split_idx]
     test = df[split_idx:]
 
-    logfire.info(
-        f"Split dataset: {len(train)} train, {len(test)} test (test size: {test_size:.1%})"
-    )
+    logger.info(f"Split dataset: {len(train)} train, {len(test)} test (test size: {test_size:.1%})")
 
     return train, test
 

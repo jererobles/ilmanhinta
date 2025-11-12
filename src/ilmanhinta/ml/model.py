@@ -6,9 +6,12 @@ from pathlib import Path
 from typing import Any
 
 import lightgbm as lgb
+import numpy as np
 import polars as pl
 
-from ilmanhinta.logging import logfire
+from ilmanhinta.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class ConsumptionModel:
@@ -31,7 +34,7 @@ class ConsumptionModel:
         params: dict[str, Any] | None = None,
     ) -> dict[str, float]:
         """Train LightGBM model on historical data."""
-        logfire.info(f"Training model on {len(train_df)} records")
+        logger.info(f"Training model on {len(train_df)} records")
 
         # Separate features and target
         feature_cols = [col for col in train_df.columns if col not in [target_col, "timestamp"]]
@@ -61,7 +64,7 @@ class ConsumptionModel:
         # Create LightGBM dataset
         train_data = lgb.Dataset(X, label=y, feature_name=feature_cols)
 
-        logfire.info(f"Training with params: {default_params}")
+        logger.info(f"Training with params: {default_params}")
 
         # Train model
         self.model = lgb.train(
@@ -90,7 +93,7 @@ class ConsumptionModel:
             "mse": mse,
         }
 
-        logfire.info(f"Training complete: RMSE={rmse:.2f}, MAE={mae:.2f}")
+        logger.info(f"Training complete: RMSE={rmse:.2f}, MAE={mae:.2f}")
 
         return metrics
 
@@ -99,7 +102,7 @@ class ConsumptionModel:
         if self.model is None:
             raise ValueError("Model not trained or loaded")
 
-        logfire.info(f"Making predictions for {len(features_df)} records")
+        logger.info(f"Making predictions for {len(features_df)} records")
 
         # Ensure all required features are present
         missing_features = set(self.feature_names) - set(features_df.columns)
@@ -119,7 +122,9 @@ class ConsumptionModel:
         result = features_df.with_columns(pl.Series("predicted_consumption_mw", predictions))
 
         # Add confidence intervals (simple approximation using std)
-        std = predictions.std()
+        # Cast to numpy array to ensure .std() is available
+        predictions_arr = np.asarray(predictions)
+        std = predictions_arr.std()
         result = result.with_columns(
             [
                 (pl.col("predicted_consumption_mw") - 1.96 * std).alias("confidence_lower"),
@@ -127,7 +132,7 @@ class ConsumptionModel:
             ]
         )
 
-        logfire.info("Predictions complete")
+        logger.info("Predictions complete")
 
         return result
 
@@ -148,7 +153,7 @@ class ConsumptionModel:
         with open(path, "wb") as f:
             pickle.dump(metadata, f)
 
-        logfire.info(f"Model saved to {path}")
+        logger.info(f"Model saved to {path}")
 
     def load(self, path: Path) -> None:
         """Load model from disk."""
@@ -160,7 +165,7 @@ class ConsumptionModel:
         self.model_version = metadata["model_version"]
         self.trained_at = metadata["trained_at"]
 
-        logfire.info(f"Model loaded from {path} (version: {self.model_version})")
+        logger.info(f"Model loaded from {path} (version: {self.model_version})")
 
     def get_feature_importance(self) -> dict[str, float]:
         """Get feature importance scores."""

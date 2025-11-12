@@ -9,15 +9,14 @@ repos:
       - id: check-merge-conflict
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.2.1
+    rev: v0.14.4
     hooks:
-      - id: ruff
-        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-check
+        args: [--fix]
       - id: ruff-format
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.8.0
+    rev: v1.18.2
     hooks:
       - id: mypy
-        additional_dependencies: [pydantic>=2.5.0, types-requests]
-        args: [--strict, --ignore-missing-imports]
+        additional_dependencies: [pydantic>=2.12.4, polars>=0.20.0]

@@ -6,21 +6,30 @@ production compatibility and concurrent access.
 
 from __future__ import annotations
 
+import math
 import os
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
-import pandas as pd
 import polars as pl
+from polars.datatypes import DataTypeClass
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.sql.expression import TextClause
+
+from ilmanhinta.config import settings
 
 
 def get_database_url() -> str:
     """Get PostgreSQL database URL from environment."""
-    return os.getenv("DATABASE_URL", "postgresql://api:hunter2@localhost:5432/ilmanhinta")
+    env_database_url = os.getenv("DATABASE_URL", None)
+    if env_database_url is not None:
+        return env_database_url
+
+    return f"postgresql://{settings.postgres_user}:{settings.postgres_password}@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}"
 
 
 class PostgresClient:
@@ -33,10 +42,11 @@ class PostgresClient:
     - DuckDB can connect via postgres_scanner for analytical queries
 
     Tables:
-    - electricity_consumption: Fingrid electricity data (15-min intervals)
-    - electricity_prices: Spot prices per area
-    - weather_observations: FMI weather data (hourly)
-    - predictions: Model predictions with confidence intervals
+    - fingrid_power_actuals: Fingrid electricity data (15-min intervals)
+    - fingrid_price_actuals: Spot prices per area
+    - fmi_weather_observations: FMI weather data (hourly)
+    - consumption_model_predictions: Consumption model outputs with confidence intervals
+    - price_model_predictions: Price model outputs with confidence intervals
     """
 
     def __init__(self, database_url: str | None = None) -> None:
@@ -47,7 +57,7 @@ class PostgresClient:
         """
         self.database_url = database_url or get_database_url()
         self._engine: Engine | None = None
-        self._session_factory: sessionmaker | None = None
+        self._session_factory: sessionmaker[Session] | None = None
 
     @property
     def engine(self) -> Engine:
@@ -62,7 +72,7 @@ class PostgresClient:
         return self._engine
 
     @property
-    def session_factory(self) -> sessionmaker:
+    def session_factory(self) -> sessionmaker[Session]:
         """Get session factory."""
         if self._session_factory is None:
             self._session_factory = sessionmaker(bind=self.engine)
@@ -88,6 +98,26 @@ class PostgresClient:
         finally:
             session.close()
 
+    def _read_frame(
+        self,
+        query: str | TextClause,
+        params: Mapping[str, object] | None = None,
+        *,
+        schema_overrides: Mapping[str, DataTypeClass] | None = None,
+        infer_schema_length: int | None = None,
+    ) -> pl.DataFrame:
+        """Execute a query and return the result as a Polars DataFrame."""
+        stmt = query if isinstance(query, TextClause) else text(query)
+        if params:
+            stmt = stmt.bindparams(**params)
+        with self.engine.connect() as connection:
+            return pl.read_database(
+                stmt,
+                connection=connection,
+                schema_overrides=dict(schema_overrides or {}),
+                infer_schema_length=infer_schema_length,
+            )
+
     def insert_consumption(self, df: pl.DataFrame) -> int:
         """Insert electricity consumption data from Polars DataFrame.
 
@@ -99,52 +129,50 @@ class PostgresClient:
         Returns:
             Number of rows inserted/updated
         """
-        # Convert Polars to pandas for SQLAlchemy
-        pdf = df.to_pandas()
-
-        # Rename columns to match database schema
         column_mapping = {
             "timestamp": "time",
             "consumption": "consumption_mw",
             "production": "production_mw",
             "net_import": "net_import_mw",
         }
-        pdf = pdf.rename(columns=column_mapping)
+        rename_map = {old: new for old, new in column_mapping.items() if old in df.columns}
+        if rename_map:
+            df = df.rename(rename_map)
 
-        # Use batch upsert with ON CONFLICT
+        target_columns = [
+            "time",
+            "consumption_mw",
+            "production_mw",
+            "wind_mw",
+            "nuclear_mw",
+            "net_import_mw",
+        ]
+        missing = [col for col in target_columns if col not in df.columns]
+        if missing:
+            df = df.with_columns([pl.lit(None).alias(col) for col in missing])
+
+        values_list = df.select(target_columns).to_dicts()
+
+        if not values_list:
+            return 0
+
+        upsert_sql = text(
+            """
+            INSERT INTO fingrid_power_actuals (time, consumption_mw, production_mw, wind_mw, nuclear_mw, net_import_mw)
+            VALUES (:time, :consumption_mw, :production_mw, :wind_mw, :nuclear_mw, :net_import_mw)
+            ON CONFLICT (time) DO UPDATE SET
+                consumption_mw = EXCLUDED.consumption_mw,
+                production_mw = EXCLUDED.production_mw,
+                wind_mw = EXCLUDED.wind_mw,
+                nuclear_mw = EXCLUDED.nuclear_mw,
+                net_import_mw = EXCLUDED.net_import_mw
+        """
+        )
         with self.session() as session:
-            # Prepare values for bulk insert
-            values_list = []
-            for _, row in pdf.iterrows():
-                values_list.append(
-                    {
-                        "time": row.get("time"),
-                        "consumption_mw": row.get("consumption_mw"),
-                        "production_mw": row.get("production_mw"),
-                        "wind_mw": row.get("wind_mw"),
-                        "nuclear_mw": row.get("nuclear_mw"),
-                        "net_import_mw": row.get("net_import_mw"),
-                    }
-                )
+            session.execute(upsert_sql, values_list)
+            session.commit()
 
-            # Use raw SQL for efficient batch upsert
-            if values_list:
-                upsert_sql = text(
-                    """
-                    INSERT INTO electricity_consumption (time, consumption_mw, production_mw, wind_mw, nuclear_mw, net_import_mw)
-                    VALUES (:time, :consumption_mw, :production_mw, :wind_mw, :nuclear_mw, :net_import_mw)
-                    ON CONFLICT (time) DO UPDATE SET
-                        consumption_mw = EXCLUDED.consumption_mw,
-                        production_mw = EXCLUDED.production_mw,
-                        wind_mw = EXCLUDED.wind_mw,
-                        nuclear_mw = EXCLUDED.nuclear_mw,
-                        net_import_mw = EXCLUDED.net_import_mw
-                """
-                )
-                session.execute(upsert_sql, values_list)
-                session.commit()
-
-            return len(pdf)
+        return len(values_list)
 
     def insert_prices(
         self,
@@ -165,19 +193,39 @@ class PostgresClient:
         Returns:
             Number of rows inserted
         """
-        pdf = df.to_pandas()
-        pdf["area"] = area
-        pdf["price_type"] = price_type
-        pdf["source"] = source
+        if "timestamp" in df.columns and "time" not in df.columns:
+            df = df.rename({"timestamp": "time"})
 
-        pdf.to_sql(
-            "electricity_prices",
-            con=self.engine,
-            if_exists="append",
-            index=False,
-            method="multi",
+        df = df.with_columns(
+            [
+                pl.lit(area).alias("area"),
+                pl.lit(price_type).alias("price_type"),
+                pl.lit(source).alias("source"),
+            ]
         )
-        return len(pdf)
+
+        target_columns = ["time", "price_eur_mwh", "area", "price_type", "source"]
+        missing = [col for col in target_columns if col not in df.columns]
+        if missing:
+            df = df.with_columns([pl.lit(None).alias(col) for col in missing])
+
+        records = df.select(target_columns).to_dicts()
+        if not records:
+            return 0
+
+        insert_sql = text(
+            """
+            INSERT INTO fingrid_price_actuals (time, price_eur_mwh, area, price_type, source)
+            VALUES (:time, :price_eur_mwh, :area, :price_type, :source)
+            ON CONFLICT DO NOTHING
+        """
+        )
+
+        with self.session() as session:
+            session.execute(insert_sql, records)
+            session.commit()
+
+        return len(records)
 
     def insert_weather(self, df: pl.DataFrame, station_id: str) -> int:
         """Insert weather observations from Polars DataFrame.
@@ -191,63 +239,64 @@ class PostgresClient:
         Returns:
             Number of rows inserted/updated
         """
-        pdf = df.to_pandas()
+        if "timestamp" in df.columns and "time" not in df.columns:
+            df = df.rename({"timestamp": "time"})
 
-        # Rename timestamp column to time if needed (database uses 'time')
-        if "timestamp" in pdf.columns and "time" not in pdf.columns:
-            pdf = pdf.rename(columns={"timestamp": "time"})
+        df = df.with_columns(pl.lit(station_id).alias("station_id"))
 
-        pdf["station_id"] = station_id
+        target_columns = [
+            "time",
+            "station_id",
+            "temperature_c",
+            "humidity_percent",
+            "wind_speed_ms",
+            "wind_direction",
+            "pressure_hpa",
+            "precipitation_mm",
+            "cloud_cover",
+        ]
+        missing = [col for col in target_columns if col not in df.columns]
+        if missing:
+            df = df.with_columns([pl.lit(None).alias(col) for col in missing])
 
-        # Use batch upsert with ON CONFLICT
+        values_list: list[dict[str, object]] = []
+        for row in df.select(target_columns).to_dicts():
+            cloud_cover = row.get("cloud_cover")
+            if isinstance(cloud_cover, float):
+                cloud_cover = None if math.isnan(cloud_cover) else int(cloud_cover)
+            elif isinstance(cloud_cover, int):
+                cloud_cover = int(cloud_cover)
+            else:
+                cloud_cover = None if cloud_cover is None else cloud_cover
+
+            row["cloud_cover"] = cloud_cover
+            values_list.append(row)
+
+        if not values_list:
+            return 0
+
+        upsert_sql = text(
+            """
+            INSERT INTO fmi_weather_observations
+            (time, station_id, temperature_c, humidity_percent, wind_speed_ms,
+             wind_direction, pressure_hpa, precipitation_mm, cloud_cover)
+            VALUES (:time, :station_id, :temperature_c, :humidity_percent, :wind_speed_ms,
+                    :wind_direction, :pressure_hpa, :precipitation_mm, :cloud_cover)
+            ON CONFLICT (time, station_id, data_type) DO UPDATE SET
+                temperature_c = EXCLUDED.temperature_c,
+                humidity_percent = EXCLUDED.humidity_percent,
+                wind_speed_ms = EXCLUDED.wind_speed_ms,
+                wind_direction = EXCLUDED.wind_direction,
+                pressure_hpa = EXCLUDED.pressure_hpa,
+                precipitation_mm = EXCLUDED.precipitation_mm,
+                cloud_cover = EXCLUDED.cloud_cover
+        """
+        )
         with self.session() as session:
-            # Prepare values for bulk insert
-            values_list = []
-            for _, row in pdf.iterrows():
-                # Convert cloud_cover to int, handling NaN
-                cloud_cover = row.get("cloud_cover")
-                if pd.isna(cloud_cover):
-                    cloud_cover = None
-                elif isinstance(cloud_cover, (int, float)):
-                    cloud_cover = int(cloud_cover) if not pd.isna(cloud_cover) else None
+            session.execute(upsert_sql, values_list)
+            session.commit()
 
-                values_list.append(
-                    {
-                        "time": row.get("time"),
-                        "station_id": row.get("station_id"),
-                        "temperature_c": row.get("temperature_c"),
-                        "humidity_percent": row.get("humidity_percent"),
-                        "wind_speed_ms": row.get("wind_speed_ms"),
-                        "wind_direction": row.get("wind_direction"),
-                        "pressure_hpa": row.get("pressure_hpa"),
-                        "precipitation_mm": row.get("precipitation_mm"),
-                        "cloud_cover": cloud_cover,
-                    }
-                )
-
-            # Use raw SQL for efficient batch upsert
-            if values_list:
-                upsert_sql = text(
-                    """
-                    INSERT INTO weather_observations
-                    (time, station_id, temperature_c, humidity_percent, wind_speed_ms,
-                     wind_direction, pressure_hpa, precipitation_mm, cloud_cover)
-                    VALUES (:time, :station_id, :temperature_c, :humidity_percent, :wind_speed_ms,
-                            :wind_direction, :pressure_hpa, :precipitation_mm, :cloud_cover)
-                    ON CONFLICT (time, station_id, data_type) DO UPDATE SET
-                        temperature_c = EXCLUDED.temperature_c,
-                        humidity_percent = EXCLUDED.humidity_percent,
-                        wind_speed_ms = EXCLUDED.wind_speed_ms,
-                        wind_direction = EXCLUDED.wind_direction,
-                        pressure_hpa = EXCLUDED.pressure_hpa,
-                        precipitation_mm = EXCLUDED.precipitation_mm,
-                        cloud_cover = EXCLUDED.cloud_cover
-                """
-                )
-                session.execute(upsert_sql, values_list)
-                session.commit()
-
-            return len(pdf)
+        return len(values_list)
 
     def insert_weather_forecast(
         self,
@@ -270,24 +319,26 @@ class PostgresClient:
         Returns:
             Number of rows inserted
         """
-        pdf = df.to_pandas()
+        if "time" in df.columns and "forecast_time" not in df.columns:
+            df = df.rename({"time": "forecast_time"})
 
-        # Rename time column if needed
-        if "time" in pdf.columns and "forecast_time" not in pdf.columns:
-            pdf = pdf.rename(columns={"time": "forecast_time"})
-
-        pdf["station_id"] = station_id
-        pdf["forecast_model"] = forecast_model
-        pdf["generated_at"] = generated_at or datetime.now(UTC)
-
-        pdf.to_sql(
-            "weather_forecasts",
-            con=self.engine,
-            if_exists="append",
-            index=False,
-            method="multi",
+        generated_at = generated_at or datetime.now(UTC)
+        df = df.with_columns(
+            [
+                pl.lit(station_id).alias("station_id"),
+                pl.lit(forecast_model).alias("forecast_model"),
+                pl.lit(generated_at).alias("generated_at"),
+            ]
         )
-        return len(pdf)
+
+        if df.is_empty():
+            return 0
+
+        return df.write_database(
+            table_name="fmi_weather_forecasts",
+            connection=self.engine,
+            if_table_exists="append",
+        )
 
     def insert_fingrid_forecast(
         self,
@@ -310,26 +361,28 @@ class PostgresClient:
         Returns:
             Number of rows inserted
         """
-        pdf = df.to_pandas()
+        if "time" in df.columns and "forecast_time" not in df.columns:
+            df = df.rename({"time": "forecast_time"})
 
-        # Rename columns if needed
-        if "time" in pdf.columns and "forecast_time" not in pdf.columns:
-            pdf = pdf.rename(columns={"time": "forecast_time"})
-
-        pdf["forecast_type"] = forecast_type
-        pdf["unit"] = unit
+        generated_at = generated_at or datetime.now(UTC)
+        additions = [
+            pl.lit(forecast_type).alias("forecast_type"),
+            pl.lit(unit).alias("unit"),
+            pl.lit(generated_at).alias("generated_at"),
+        ]
         if update_frequency:
-            pdf["update_frequency"] = update_frequency
-        pdf["generated_at"] = generated_at or datetime.now(UTC)
+            additions.append(pl.lit(update_frequency).alias("update_frequency"))
 
-        pdf.to_sql(
-            "fingrid_forecasts",
-            con=self.engine,
-            if_exists="append",
-            index=False,
-            method="multi",
+        df = df.with_columns(additions)
+
+        if df.is_empty():
+            return 0
+
+        return df.write_database(
+            table_name="fingrid_power_forecasts",
+            connection=self.engine,
+            if_table_exists="append",
         )
-        return len(pdf)
 
     def insert_predictions(
         self,
@@ -339,7 +392,7 @@ class PostgresClient:
         generated_at: datetime | None = None,
         training_end_date: datetime | None = None,
     ) -> int:
-        """Insert price predictions from Polars DataFrame.
+        """Insert price-model predictions from a Polars DataFrame.
 
         Args:
             df: Polars DataFrame with predictions
@@ -353,37 +406,40 @@ class PostgresClient:
         Returns:
             Number of rows inserted
         """
-        pdf = df.to_pandas()
+        if "time" in df.columns and "prediction_time" not in df.columns:
+            df = df.rename({"time": "prediction_time"})
 
-        # Rename columns if needed
-        if "time" in pdf.columns and "prediction_time" not in pdf.columns:
-            pdf = pdf.rename(columns={"time": "prediction_time"})
-
-        # Handle Prophet column names
         column_mapping = {
             "yhat": "predicted_price_eur_mwh",
             "yhat_lower": "confidence_lower",
             "yhat_upper": "confidence_upper",
         }
-        pdf = pdf.rename(columns=column_mapping)
+        rename_map = {old: new for old, new in column_mapping.items() if old in df.columns}
+        if rename_map:
+            df = df.rename(rename_map)
 
-        pdf["model_type"] = model_type
+        generated_at = generated_at or datetime.now(UTC)
+        additions = [
+            pl.lit(model_type).alias("model_type"),
+            pl.lit(generated_at).alias("generated_at"),
+        ]
         if model_version:
-            pdf["model_version"] = model_version
-        pdf["generated_at"] = generated_at or datetime.now(UTC)
+            additions.append(pl.lit(model_version).alias("model_version"))
         if training_end_date:
-            pdf["training_end_date"] = training_end_date
+            additions.append(pl.lit(training_end_date).alias("training_end_date"))
 
-        pdf.to_sql(
-            "model_predictions",
-            con=self.engine,
-            if_exists="append",
-            index=False,
-            method="multi",
+        df = df.with_columns(additions)
+
+        if df.is_empty():
+            return 0
+
+        return df.write_database(
+            table_name="price_model_predictions",
+            connection=self.engine,
+            if_table_exists="append",
         )
-        return len(pdf)
 
-    def get_weather_forecasts(
+    def get_fmi_weather_forecasts(
         self,
         start_time: datetime,
         end_time: datetime,
@@ -410,7 +466,7 @@ class PostgresClient:
                 global_radiation_wm2,
                 forecast_model,
                 generated_at
-            FROM weather_forecasts
+            FROM fmi_weather_forecasts
             WHERE forecast_time >= :start_time AND forecast_time <= :end_time
         """
 
@@ -429,15 +485,9 @@ class PostgresClient:
 
         query += " ORDER BY forecast_time, station_id, generated_at DESC"
 
-        with self.session() as session:
-            result = session.execute(text(query), params)
-            rows = result.fetchall()
-            if not rows:
-                return pl.DataFrame()
-            pdf = pd.DataFrame(rows, columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(query, params if params else None)
 
-    def get_fingrid_forecasts(
+    def get_fingrid_power_forecasts(
         self,
         start_time: datetime,
         end_time: datetime,
@@ -453,7 +503,7 @@ class PostgresClient:
                 unit,
                 update_frequency,
                 generated_at
-            FROM fingrid_forecasts
+            FROM fingrid_power_forecasts
             WHERE forecast_time >= :start_time AND forecast_time <= :end_time
         """
 
@@ -469,13 +519,7 @@ class PostgresClient:
 
         query += " ORDER BY forecast_time, forecast_type, generated_at DESC"
 
-        with self.session() as session:
-            result = session.execute(text(query), params)
-            rows = result.fetchall()
-            if not rows:
-                return pl.DataFrame()
-            pdf = pd.DataFrame(rows, columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(query, params if params else None)
 
     def get_consumption(
         self,
@@ -495,17 +539,14 @@ class PostgresClient:
 
         query = text(
             """
-            SELECT time, consumption_mw, production_mw, net_import_mw
-            FROM electricity_consumption
+            SELECT time, consumption_mw, production_mw, wind_mw, nuclear_mw, net_import_mw
+            FROM fingrid_power_actuals
             WHERE time >= :start_time AND time <= :end_time
             ORDER BY time
         """
         )
 
-        with self.session() as session:
-            result = session.execute(query, {"start_time": start_time, "end_time": end_time})
-            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(query, {"start_time": start_time, "end_time": end_time})
 
     def get_prices(
         self,
@@ -528,19 +569,16 @@ class PostgresClient:
         query = text(
             """
             SELECT time, price_eur_mwh, area
-            FROM electricity_prices
+            FROM fingrid_price_actuals
             WHERE time >= :start_time AND time <= :end_time
               AND area = :area
             ORDER BY time
         """
         )
 
-        with self.session() as session:
-            result = session.execute(
-                query, {"start_time": start_time, "end_time": end_time, "area": area}
-            )
-            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(
+            query, {"start_time": start_time, "end_time": end_time, "area": area}
+        )
 
     def get_weather(
         self,
@@ -571,7 +609,7 @@ class PostgresClient:
                        humidity_percent AS humidity,
                        pressure_hpa AS pressure,
                        precipitation_mm
-                FROM weather_observations
+                FROM fmi_weather_observations
                 WHERE time >= :start_time AND time <= :end_time
                   AND station_id = :station_id
                 ORDER BY time
@@ -589,24 +627,21 @@ class PostgresClient:
                        humidity_percent AS humidity,
                        pressure_hpa AS pressure,
                        precipitation_mm
-                FROM weather_observations
+                FROM fmi_weather_observations
                 WHERE time >= :start_time AND time <= :end_time
                 ORDER BY time
             """
             )
             params = {"start_time": start_time, "end_time": end_time}
 
-        with self.session() as session:
-            result = session.execute(query, params)
-            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(query, params)
 
     def get_latest_predictions(
         self,
         model_type: str = "prophet",
         limit: int = 24,
     ) -> pl.DataFrame:
-        """Get latest predictions.
+        """Get latest consumption-model predictions.
 
         Args:
             model_type: Filter by model type
@@ -619,7 +654,7 @@ class PostgresClient:
             """
             WITH latest_run AS (
                 SELECT MAX(generated_at) as latest_generated
-                FROM predictions
+                FROM consumption_model_predictions
                 WHERE model_type = :model_type
             )
             SELECT
@@ -630,7 +665,7 @@ class PostgresClient:
                 p.model_type,
                 p.model_version,
                 p.generated_at
-            FROM predictions p, latest_run
+            FROM consumption_model_predictions p, latest_run
             WHERE p.generated_at = latest_run.latest_generated
               AND p.model_type = :model_type
             ORDER BY p.timestamp
@@ -638,10 +673,7 @@ class PostgresClient:
         """
         )
 
-        with self.session() as session:
-            result = session.execute(query, {"model_type": model_type, "limit": limit})
-            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(query, {"model_type": model_type, "limit": limit})
 
     def get_joined_training_data(
         self,
@@ -674,38 +706,49 @@ class PostgresClient:
                 w.cloud_cover,
                 w.humidity_percent AS humidity,
                 w.pressure_hpa AS pressure,
-                w.precipitation_mm,
-                p.price_eur_mwh
-            FROM electricity_consumption c
+                w.precipitation_mm
+            FROM fingrid_power_actuals c
             LEFT JOIN LATERAL (
-                SELECT * FROM weather_observations w2
+                SELECT * FROM fmi_weather_observations w2
                 WHERE w2.time <= c.time
                 ORDER BY w2.time DESC
                 LIMIT 1
             ) w ON true
-            LEFT JOIN LATERAL (
-                SELECT * FROM electricity_prices p2
-                WHERE p2.time = c.time
-                  AND p2.area = 'FI'
-                LIMIT 1
-            ) p ON true
             WHERE c.time >= :start_time AND c.time <= :end_time
             ORDER BY c.time
         """
         )
 
-        with self.session() as session:
-            result = session.execute(query, {"start_time": start_time, "end_time": end_time})
-            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
-            return pl.from_pandas(pdf)
+        float_columns = [
+            "consumption_mw",
+            "production_mw",
+            "wind_mw",
+            "nuclear_mw",
+            "net_import_mw",
+            "temperature",
+            "wind_speed",
+            "wind_direction",
+            "cloud_cover",
+            "humidity",
+            "pressure",
+            "precipitation_mm",
+        ]
+        schema_overrides = dict.fromkeys(float_columns, pl.Float64)
 
-    def get_prediction_comparison(
+        return self._read_frame(
+            query,
+            {"start_time": start_time, "end_time": end_time},
+            schema_overrides=schema_overrides,
+            infer_schema_length=None,
+        )
+
+    def get_price_prediction_comparison(
         self,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
         limit: int = 100,
     ) -> pl.DataFrame:
-        """Get prediction comparison data (ML vs Fingrid vs Actual).
+        """Get price-prediction comparison data (ML vs Fingrid vs actuals).
 
         Args:
             start_time: Start timestamp (defaults to 7 days ago)
@@ -738,22 +781,19 @@ class PostgresClient:
                 END as winner,
                 model_type,
                 model_version
-            FROM prediction_comparison
+            FROM price_prediction_comparison
             WHERE time >= :start_time AND time <= :end_time
             ORDER BY time DESC
             LIMIT :limit
         """
         )
 
-        with self.session() as session:
-            result = session.execute(
-                query, {"start_time": start_time, "end_time": end_time, "limit": limit}
-            )
-            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
-            return pl.from_pandas(pdf)
+        return self._read_frame(
+            query, {"start_time": start_time, "end_time": end_time, "limit": limit}
+        )
 
-    def get_performance_summary(self, hours_back: int = 24) -> dict[str, any]:
-        """Get performance summary comparing ML model vs Fingrid forecasts.
+    def get_price_performance_summary(self, hours_back: int = 24) -> dict[str, Any]:
+        """Get price-performance summary comparing ML model vs Fingrid forecasts.
 
         Args:
             hours_back: Number of hours to look back
@@ -761,14 +801,14 @@ class PostgresClient:
         Returns:
             Dict with performance metrics
         """
-        query = text("SELECT * FROM get_latest_performance_summary(:hours_back)")
+        query = text("SELECT * FROM get_price_prediction_summary(:hours_back)")
 
         with self.session() as session:
             result = session.execute(query, {"hours_back": hours_back})
             rows = result.fetchall()
 
             # Convert to dictionary
-            summary = {}
+            summary: dict[str, Any] = {}
             for row in rows:
                 metric = row[0]
                 ml_value = row[1]
@@ -783,12 +823,12 @@ class PostgresClient:
 
             return summary
 
-    def get_hourly_performance(
+    def get_price_hourly_performance(
         self,
         start_time: datetime | None = None,
         end_time: datetime | None = None,
     ) -> pl.DataFrame:
-        """Get hourly aggregated performance metrics.
+        """Get hourly aggregated price-performance metrics.
 
         Args:
             start_time: Start timestamp (defaults to 7 days ago)
@@ -814,21 +854,29 @@ class PostgresClient:
                 avg_actual_price,
                 min_actual_price,
                 max_actual_price
-            FROM hourly_prediction_performance
+            FROM price_prediction_performance_hourly
             WHERE hour >= :start_time AND hour <= :end_time
             ORDER BY hour DESC
         """
         )
 
-        with self.session() as session:
-            result = session.execute(query, {"start_time": start_time, "end_time": end_time})
-            pdf = pd.DataFrame(result.fetchall(), columns=result.keys())
-            return pl.from_pandas(pdf)
+        try:
+            return self._read_frame(query, {"start_time": start_time, "end_time": end_time})
+        except Exception as exc:  # Fall back if view was never populated
+            message = str(exc)
+            if (
+                "price_prediction_performance_hourly" in message
+                and "has not been populated" in message
+            ):
+                self.refresh_price_analytics_views()
+                return self._read_frame(query, {"start_time": start_time, "end_time": end_time})
+            raise
 
-    def refresh_materialized_views(self) -> None:
-        """Refresh all materialized views for better query performance."""
+    def refresh_price_analytics_views(self) -> None:
+        """Refresh price analytics materialized views."""
         with self.session() as session:
-            # Refresh prediction accuracy views (non-continuous due to multi-hypertable joins)
+            session.execute(text("SELECT refresh_price_prediction_views()"))
+
             session.execute(
                 text("REFRESH MATERIALIZED VIEW CONCURRENTLY prediction_accuracy_hourly")
             )
@@ -837,14 +885,17 @@ class PostgresClient:
             )
             session.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY model_comparison_24h"))
 
-            # Legacy views (if they exist)
-            try:
-                session.execute(
-                    text("REFRESH MATERIALIZED VIEW CONCURRENTLY hourly_consumption_stats")
-                )
-                session.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY daily_price_stats"))
-            except Exception:
-                pass  # Views might not exist yet
+            optional_views = [
+                "hourly_consumption_stats",
+                "daily_price_stats",
+            ]
+            for view_name in optional_views:
+                exists = session.execute(
+                    text("SELECT to_regclass(:name)"),
+                    {"name": view_name},
+                ).scalar()
+                if exists:
+                    session.execute(text(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {view_name}"))
 
             session.commit()
 
@@ -856,13 +907,17 @@ class PostgresClient:
         """
         with self.session() as session:
             consumption_count = session.execute(
-                text("SELECT COUNT(*) FROM electricity_consumption")
+                text("SELECT COUNT(*) FROM fingrid_power_actuals")
             ).scalar()
-            prices_count = session.execute(text("SELECT COUNT(*) FROM electricity_prices")).scalar()
+            prices_count = session.execute(
+                text("SELECT COUNT(*) FROM fingrid_price_actuals")
+            ).scalar()
             weather_count = session.execute(
-                text("SELECT COUNT(*) FROM weather_observations")
+                text("SELECT COUNT(*) FROM fmi_weather_observations")
             ).scalar()
-            predictions_count = session.execute(text("SELECT COUNT(*) FROM predictions")).scalar()
+            predictions_count = session.execute(
+                text("SELECT COUNT(*) FROM consumption_model_predictions")
+            ).scalar()
 
             # Get database size
             db_size = session.execute(
@@ -874,9 +929,9 @@ class PostgresClient:
             ).scalar()
 
             return {
-                "consumption_rows": consumption_count,
-                "prices_rows": prices_count,
-                "weather_rows": weather_count,
-                "predictions_rows": predictions_count,
-                "db_size_bytes": db_size,
+                "consumption_rows": int(consumption_count or 0),
+                "prices_rows": int(prices_count or 0),
+                "weather_rows": int(weather_count or 0),
+                "predictions_rows": int(predictions_count or 0),
+                "db_size_bytes": int(db_size or 0),
             }

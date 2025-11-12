@@ -3,9 +3,21 @@ include:
     env_file: ./signoz/deploy/docker/.env
 
 x-common-env: &common-env
-  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
-  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
   DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  # Debug (prints to console)
+  # OTEL_TRACES_EXPORTER: console,otlp
+  OTEL_LOG_LEVEL: debug
+
+x-python-env: &python-env # Auto-instrumentation uses HTTP not gRPC
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED: true
+  OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: http://otel-collector:4318/v1/logs
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: otlp
+  OTEL_LOGS_EXPORTER: otlp
 
 services:
   postgres:
@@ -36,8 +48,7 @@ services:
       - "log_line_prefix=%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init_timescaledb_enhanced.sql:/docker-entrypoint-initdb.d/01_init.sql
-      - ./init.sql:/docker-entrypoint-initdb.d/02_init_legacy.sql
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
@@ -54,14 +65,12 @@ services:
     env_file:
       - .env
     environment:
-      <<: *common-env
-      DATA_DIR: /data
+      <<: [*python-env, *common-env]
       OTEL_SERVICE_NAME: ilmanhinta-dagster-daemon
     volumes:
       - ./src:/app/src
       - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml
       - dagster_storage:/opt/dagster/dagster_home/storage
-      - pipeline_data:/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,7 +84,7 @@ services:
     env_file:
       - .env
     environment:
-      <<: *common-env
+      <<: [*python-env, *common-env]
       OTEL_SERVICE_NAME: ilmanhinta-dagster-webserver
     ports:
       - "3000:3000"
@@ -91,11 +100,11 @@ services:
 
   api:
     build: .
-    command: uvicorn ilmanhinta.api.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn ilmanhinta.api.main:app --host 0.0.0.0 --port 8000
     env_file:
       - .env
     environment:
-      <<: *common-env
+      <<: [*python-env, *common-env]
       OTEL_SERVICE_NAME: ilmanhinta-api
     ports:
       - "8000:8000"
@@ -116,7 +125,7 @@ services:
     image: burningalchemist/sql_exporter:latest
     command: ["--config.file=/config.yml"]
     environment:
-      SQLEXPORTER_TARGET_DSN: "postgresql://api:${POSTGRES_PASSWORD}@postgres:5432/ilmanhinta?sslmode=disable"
+      SQLEXPORTER_TARGET_DSN: "${DATABASE_URL}?sslmode=disable"
     volumes:
       - ./sql_exporter.yml:/config.yml:ro
     ports:
